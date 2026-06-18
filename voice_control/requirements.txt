@@ -1,0 +1,37 @@
+# Dependencies for the voice_control package.
+#
+#   pip install -r voice_control/requirements.txt
+#
+# Everything except the core group is imported lazily, so you can comment out
+# any group you don't need. macOS note: the audio group needs PortAudio first:
+#   brew install portaudio
+# ---------------------------------------------------------------------------
+
+# --- Core (parser / schemas / safety / publisher / CLI) ---------------------
+pydantic>=2.0
+pyyaml>=6.0            # optional but recommended for YAML configs
+
+# --- Tests ------------------------------------------------------------------
+pytest>=7.0
+
+# --- Real planner path (ZMQ to the SONIC C++ ZMQManager) --------------------
+pyzmq>=25.0
+# NOTE: the ExistingRepoPublisher also needs the repo's wire builders:
+#   pip install -e gear_sonic/            (provides build_command_message / build_planner_message)
+
+# --- LLM duration estimator (hf_transformers backend; LiquidAI LFM2 model) --
+transformers>=4.55
+torch>=2.2
+accelerate>=0.30      # faster / lower-memory model loading
+
+# --- Offline ASR + microphone capture ---------------------------------------
+vosk>=0.3.45          # default ASR backend
+sounddevice>=0.4.6    # microphone capture (needs PortAudio)
+webrtcvad>=2.0.10     # voice activity detection
+
+# --- Wake word (pick one) ---------------------------------------------------
+openwakeword>=0.6.0
+# pvporcupine>=3.0     # alternative wake-word engine (needs an access key)
+
+# --- Offline text-to-speech feedback ----------------------------------------
+pyttsx3>=2.90
