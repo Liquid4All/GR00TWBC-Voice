@@ -157,7 +157,12 @@ class LLMDurationEstimator:
                 self.cfg, prompt, grammar=DURATION_GRAMMAR, n_predict=48, stop=["\n\n"]
             )
         except Exception as exc:
-            log.warning("Duration LLM unavailable (%s); using heuristic.", exc)
+            # Log the concrete error (type + repr) and full traceback; a bare
+            # "%s" can be empty for exceptions with no message.
+            log.warning(
+                "Duration LLM call failed (%s: %r); using heuristic.",
+                type(exc).__name__, exc, exc_info=True,
+            )
             return None
 
         value = parse_duration_seconds(completion)

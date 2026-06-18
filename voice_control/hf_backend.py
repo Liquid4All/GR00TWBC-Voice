@@ -99,28 +99,46 @@ def generate(cfg: ParserConfig, prompt: str, max_new_tokens: Optional[int] = Non
     tokenizer, model, device = _load(cfg)
 
     # Prefer the model's chat template when it defines one (LFM2 ships one).
+    # return_dict gives us an attention_mask too, which generate() needs to
+    # avoid undefined behaviour when there's no pad token.
     messages = [{"role": "user", "content": prompt}]
+    inputs = None
     try:
-        input_ids = tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors="pt"
+        inputs = tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            return_tensors="pt",
+            return_dict=True,
         )
-    except Exception:  # no chat template -> fall back to raw prompt
-        input_ids = tokenizer(prompt, return_tensors="pt").input_ids
-    input_ids = input_ids.to(device)
+    except Exception:
+        inputs = None
+    if inputs is None or not hasattr(inputs, "get") or inputs.get("input_ids") is None:
+        # No usable chat template -> plain tokenization.
+        inputs = tokenizer(prompt, return_tensors="pt")
+
+    inputs = {k: v.to(device) for k, v in inputs.items() if hasattr(v, "to")}
+    input_ids = inputs["input_ids"]
+    prompt_len = input_ids.shape[-1]
+
+    pad_id = tokenizer.pad_token_id
+    if pad_id is None:
+        pad_id = tokenizer.eos_token_id
 
     temperature = float(cfg.hf_temperature)
     do_sample = temperature > 0.0
     gen_kwargs = dict(
         max_new_tokens=int(max_new_tokens or cfg.hf_max_new_tokens),
         do_sample=do_sample,
-        pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+        pad_token_id=pad_id,
     )
     if do_sample:
         gen_kwargs["temperature"] = temperature
 
     with torch.no_grad():
-        output = model.generate(input_ids, **gen_kwargs)
+        output = model.generate(**inputs, **gen_kwargs)
 
-    # Decode only the newly generated tokens.
-    new_tokens = output[0][input_ids.shape[-1]:]
+    # generate() may return a tensor or a GenerateOutput; normalise to the
+    # sequence tensor, then decode only the newly generated tokens.
+    sequences = getattr(output, "sequences", output)
+    new_tokens = sequences[0][prompt_len:]
     return tokenizer.decode(new_tokens, skip_special_tokens=True)
