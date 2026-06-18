@@ -1,0 +1,54 @@
+# Offline voice control configuration for the SONIC kinematic planner.
+# Safe defaults: dry-run is ON and execute is OFF. No cloud services are used.
+
+audio:
+  backend: "vosk"            # "vosk" (default) | "whisper_cpp"
+  sample_rate: 16000
+  device: null               # mic device index; null = system default
+  vad: true
+  vad_aggressiveness: 2      # 0..3 (webrtcvad)
+  phrase_timeout_s: 1.0      # trailing silence that ends an utterance
+  max_utterance_s: 8.0
+
+wake:
+  mode: "push_to_talk"       # no_wake_debug | push_to_talk | wake_word | vad_only
+  phrase: "hey sonic"
+  require_wake_word_for_motion: true
+
+asr:
+  vosk_model_path: "models/vosk-model-small-en-us"
+  whisper_cpp_bin: null      # path to compiled whisper.cpp binary
+  whisper_model_path: null   # path to ggml-tiny.en.bin / ggml-base.en.bin
+
+parser:
+  use_llm_fallback: false
+  confidence_threshold: 0.75
+  # "hf_transformers" loads a local HuggingFace checkpoint in-process;
+  # "llama_cpp" talks to a local llama.cpp /completion server.
+  llm_backend: "hf_transformers"
+  llm_endpoint: "http://127.0.0.1:8080/completion"   # used only by llama_cpp
+  # HuggingFace backend: LiquidAI LFM2 on-device reasoning model.
+  hf_model_id: "LiquidAI/tim_grpo230M_from978997_multidomain_lr3e-6_ent0.00_kl0.001_b256_n16_res4k_step100_987260_HF"
+  hf_device: "auto"            # auto | cpu | cuda | mps
+  hf_dtype: "auto"             # auto | float16 | bfloat16 | float32
+  hf_max_new_tokens: 256       # room for the reasoning model to think + answer
+  hf_temperature: 0.0          # 0 => greedy/deterministic
+  use_llm_duration: false      # LLM decides per-step duration in compound commands
+  llm_duration_min_s: 0.5      # sanity floor for an estimated step duration
+  llm_duration_max_s: 120.0    # sanity ceiling for an estimated step duration
+
+safety:
+  dry_run: true              # never send to the robot unless false AND execute true
+  execute: false             # must be true (with dry_run false) to move a real robot
+  command_timeout_s: 2.0     # watchdog: stop if no fresh command within this window
+
+publisher:
+  backend: "stub"            # stub | existing_repo | zmq | ros2
+  zmq_endpoint: "tcp://127.0.0.1:5556"   # ZMQManager planner-input port (NOT 5557 = debug out)
+  ros2_topic: "/sonic/planner_command"
+  planner_dt: 0.1            # 10 Hz replan/hold rate
+  segment_dwell_s: 3.0       # fallback per-step dwell when no duration is set/estimated
+
+logging:
+  level: "INFO"
+  log_file: "logs/voice_control.log"
