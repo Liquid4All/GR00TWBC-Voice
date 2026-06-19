@@ -297,17 +297,27 @@ def run_microphone(pipeline: VoicePipeline, config: Config) -> None:  # pragma: 
     if not pipeline.dry_run:
         pipeline.start_stream_thread()
     log.info("Microphone runtime started (backend=%s, wake=%s)", backend, config.wake.mode)
+    sr = config.audio.sample_rate
     try:
         while True:
             if not gate.wait_for_trigger():
                 break
+            print("[voice] listening... (speak now)")
             pcm = capture_utterance(
                 mic, vad, config.audio.max_utterance_s, config.audio.phrase_timeout_s
             )
+            dur_ms = (len(pcm) / 2) / sr * 1000.0  # 16-bit mono => 2 bytes/sample
+            log.info("Captured %.0f ms of audio (%d bytes)", dur_ms, len(pcm))
             if not pcm:
+                print("[voice] no speech captured. Check the mic: is audio.device correct? "
+                      "Is the mic unmuted/gain up? Test with `arecord -d 3 t.wav && aplay t.wav`. "
+                      "You can also set audio.vad: false to force-record a fixed window.")
                 continue
             text = asr.transcribe(pcm)
+            log.info("ASR transcript: %r", text)
             if not text:
+                print(f"[voice] captured {dur_ms:.0f} ms but transcription was empty. "
+                      "Likely a mic-gain / sample-rate issue, or speech too quiet/far.")
                 continue
             run_text_once(pipeline, text)
     except KeyboardInterrupt:
