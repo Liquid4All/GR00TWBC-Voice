@@ -286,8 +286,8 @@ class LFMG1Parser:
                     " Likely torch/Python mismatch on Jetson: check "
                     f"'python -c \"import sys; print(sys.version); "
                     f"print(hasattr(sys, \\\"get_int_max_str_digits\\\"))\"'. "
-                    "Fix: upgrade Python to 3.11.9+ (or 3.12), or pin "
-                    "torch==2.2.2 transformers==4.44.2 accelerate==0.33.0."
+                    "Fix: upgrade Python to 3.11.9+ (or 3.12) and use Jetson-compatible torch; "
+                    "then pip install 'transformers>=5.0.0' (LFM requires v5 TokenizersBackend)."
                 )
             raise RuntimeError(
                 f"lfm_g1 import failed in {sys.executable}: {exc}.{hint} "
@@ -295,8 +295,22 @@ class LFMG1Parser:
                 f"{sys.executable} -m pip install torch transformers accelerate"
             ) from exc
         log.info("Loading LFM G1 model %s ...", self.cfg.lfm_model_id)
-        self._tokenizer = AutoTokenizer.from_pretrained(self.cfg.lfm_model_id)
-        kwargs: Dict[str, Any] = {"device_map": self.cfg.lfm_device}
+        load_kw: Dict[str, Any] = {"trust_remote_code": True}
+        try:
+            import transformers
+            ver = tuple(int(x) for x in transformers.__version__.split(".")[:2])
+            if ver < (5, 0):
+                raise RuntimeError(
+                    f"LFM models need transformers>=5.0 (you have {transformers.__version__}); "
+                    f"TokenizersBackend is unavailable in 4.x. "
+                    f"Run: {sys.executable} -m pip install 'transformers>=5.0.0' 'tokenizers>=0.21.0'"
+                )
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
+        self._tokenizer = AutoTokenizer.from_pretrained(self.cfg.lfm_model_id, **load_kw)
+        kwargs: Dict[str, Any] = {"device_map": self.cfg.lfm_device, "trust_remote_code": True}
         if self.cfg.lfm_device != "cpu":
             kwargs["torch_dtype"] = torch.bfloat16
         self._model = AutoModelForCausalLM.from_pretrained(self.cfg.lfm_model_id, **kwargs)

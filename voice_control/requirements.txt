@@ -34,11 +34,11 @@ openwakeword>=0.6.0
 pyttsx3>=2.90
 
 # --- LFM G1 function-calling parser (parser.backend: lfm_g1) ---------------
-# Desktop: recent torch + transformers is fine.
-# Jetson G1 NX: pip's latest torch often needs Python 3.11.9+ (sys.get_int_max_str_digits).
-# If import fails with that attribute or GenerationMixin, use the pins below instead:
-#   pip install torch==2.2.2 transformers==4.44.2 accelerate==0.33.0
-# Or install NVIDIA Jetson wheels for your JetPack, then transformers/accelerate only.
+# LFM2.5 checkpoints declare tokenizer_class TokenizersBackend (transformers 5+ only).
+# Desktop: pip install 'transformers>=5.0.0' 'tokenizers>=0.21.0' torch accelerate
+# Jetson G1 NX: if torch import fails on old Python, fix Python/torch first, then
+# upgrade transformers to 5.x (do NOT stay on the 4.44 pin if using lfm_g1).
 torch>=2.0
-transformers>=4.40
+transformers>=5.0.0
+tokenizers>=0.21.0
 accelerate>=0.27
