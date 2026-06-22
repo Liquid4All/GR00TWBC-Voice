@@ -34,7 +34,7 @@ safety:
   command_timeout_s: 2.0
 
 publisher:
-  backend: "stub"
+  backend: "local_planner"
   local_planner_endpoint: "tcp://127.0.0.1:5556"
   zmq_endpoint: "tcp://127.0.0.1:5556"
   zmq_bind: true
