@@ -4,7 +4,7 @@ Every spoken command must be reduced to exactly one of the validated Pydantic
 models defined here. Nothing else is ever published to the kinematic planner.
 
 The schema is intentionally small and *closed*: ``extra="forbid"`` means any
-stray field (e.g. from a hallucinating LLM) is rejected at validation time.
+stray or out-of-schema field is rejected at validation time.
 
 Coordinate / unit conventions (matching the planner ONNX interface and the
 repo's ZMQ ``planner`` topic):
@@ -135,7 +135,7 @@ PlannerToolCall = Annotated[
     Field(discriminator="tool"),
 ]
 
-# Reusable validator for dict/JSON payloads (e.g. LLM output).
+# Reusable validator for dict/JSON payloads.
 PLANNER_TOOL_CALL_ADAPTER: TypeAdapter = TypeAdapter(PlannerToolCall)
 
 #: Tools that command physical motion (used by safety / dry-run gating).
@@ -152,7 +152,7 @@ def validate_tool_call(data: object) -> "PlannerToolCallType":
     """Validate an arbitrary dict / JSON-like object into a tool call.
 
     Raises ``pydantic.ValidationError`` if the payload does not match the
-    closed schema (this is how malformed LLM output is rejected).
+    closed schema (this is how any malformed tool call is rejected).
     """
 
     return PLANNER_TOOL_CALL_ADAPTER.validate_python(data)
@@ -177,7 +177,7 @@ PlannerToolCallType = Union[
 
 
 class ParseResult(BaseModel):
-    """Result returned by every parser (deterministic or LLM)."""
+    """Result returned by the deterministic parser."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

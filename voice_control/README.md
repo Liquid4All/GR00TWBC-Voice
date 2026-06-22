@@ -6,12 +6,13 @@ planner tool calls and feeds them into the existing SONIC planner command path �
 **never** joint commands, never the policy, never the model weights.
 
 ```
-microphone → wake word / VAD → ASR → deterministic parser (+ optional tiny LLM)
-   → validated PlannerCommand(s) → confidence/execute gate → existing SONIC planner path (ZMQ)
-   → planner generates short-horizon motion → SONIC tracker follows it
+microphone (sound card OR Unitree G1 multicast) → wake word / VAD → ASR (whisper.cpp)
+   → deterministic parser → validated PlannerCommand(s) → confidence/execute gate
+   → existing SONIC planner path (ZMQ) → planner generates short-horizon motion
+   → SONIC tracker follows it
 ```
 
-Everything runs offline. No cloud services.
+Everything runs offline. No cloud services, no LLM.
 
 ---
 
@@ -45,20 +46,19 @@ Key invariants preserved:
 | `schemas.py` | Closed Pydantic tool-call schema (the only things ever published). |
 | `skills.py` | Synonyms, `LocomotionMode` mapping, heading↔direction convention, skill inventory. |
 | `parser.py` | **Deterministic** parser (normalisation, numbers, units, styles, headings). |
-| `llm_parser.py` | Optional local LLM fallback (llama.cpp), grammar + schema constrained. |
+| `duration.py` | Deterministic per-step dwell estimation for composed commands. |
 | `safety.py` | Confidence gate + dry-run/execute gate (value clamps removed; pass-through). |
 | `publisher.py` | Publisher abstraction + Stub/ZMQ/ExistingRepo/ROS2 adapters + 10 Hz hold/watchdog. |
-| `audio.py` | Mic capture + VAD (optional `sounddevice`/`webrtcvad`). |
+| `audio.py` | Capture (`MicrophoneCapture` sound card / `MulticastMicrophone` G1) + VAD. |
 | `wake.py` | `no_wake_debug` / `push_to_talk` / `wake_word` / `vad_only`. |
-| `asr_vosk.py` | Default ASR: Vosk with grammar-constrained vocabulary. |
-| `asr_whisper_cpp.py` | Optional ASR: whisper.cpp subprocess wrapper. |
+| `asr_whisper_cpp.py` | Default ASR: whisper.cpp subprocess wrapper (base.en). |
+| `asr_vosk.py` | Alternative ASR: Vosk with grammar-constrained vocabulary. |
 | `feedback.py` | Console + optional offline TTS confirmations. |
 | `cli.py` | Orchestration + CLI entry point. |
 | `config.py` | Config dataclasses + YAML loader (`configs/voice_control.yaml`). |
 
-The deterministic parser works **without** any model. The LLM is only consulted
-when deterministic parsing is inconclusive (`clarify`) and
-`parser.use_llm_fallback: true`.
+The parser is **fully deterministic** and requires no model. There is no LLM in
+this pipeline: an unrecognised/ambiguous utterance returns `clarify`.
 
 ---
 
@@ -76,10 +76,13 @@ Optional extras (only needed for the features you use):
 
 ```bash
 pip install pyzmq                 # real planner path (ExistingRepoPublisher/ZmqPublisher)
-pip install vosk sounddevice webrtcvad   # default mic ASR
-pip install openwakeword         # or pvporcupine, for wake-word mode
-pip install pyttsx3              # offline TTS feedback
-pip install "transformers>=4.55" torch   # LLM duration estimator (hf_transformers backend)
+pip install webrtcvad             # voice-activity detection
+pip install sounddevice           # sound-card capture (source=device; needs PortAudio).
+                                  #   NOT needed for the Unitree G1 multicast mic.
+pip install vosk                  # alternative ASR backend (audio.backend: vosk)
+pip install openwakeword          # or pvporcupine, for wake-word mode
+pip install pyttsx3               # offline TTS feedback
+# whisper.cpp (default ASR) is built outside pip — see "Configure whisper.cpp".
 ```
 
 All of the above are imported lazily; the package and its tests run without them.
@@ -114,35 +117,25 @@ utterance, then it is transcribed and parsed.
 
 ---
 
-## Configure Vosk (default ASR)
+## Configure whisper.cpp (default ASR)
 
-1. Download a small English model from <https://alphacephei.com/vosk/models>
-   (e.g. `vosk-model-small-en-us-0.15`).
-2. Unpack it and point the config at it:
-
-   ```yaml
-   asr:
-     vosk_model_path: "models/vosk-model-small-en-us"
-   ```
-3. Run with the Vosk backend (default):
+1. Build [whisper.cpp](https://github.com/ggerganov/whisper.cpp) and download the
+   base English model. Nothing is auto-downloaded.
 
    ```bash
-   python -m voice_control.cli --config configs/voice_control.yaml --backend vosk --dry-run
+   git clone https://github.com/ggerganov/whisper.cpp third_party/whisper.cpp
+   cmake -S third_party/whisper.cpp -B third_party/whisper.cpp/build
+   cmake --build third_party/whisper.cpp/build -j --config Release
+   bash third_party/whisper.cpp/models/download-ggml-model.sh base.en
+   mkdir -p models/whisper && cp third_party/whisper.cpp/models/ggml-base.en.bin models/whisper/
    ```
-
-Vosk runs in **grammar mode**: the command vocabulary + synonyms are passed as a
-restricted grammar for higher accuracy/lower latency on the closed command set.
-
-## Configure whisper.cpp (optional ASR)
-
-1. Build [whisper.cpp](https://github.com/ggerganov/whisper.cpp) and download a
-   model (`ggml-tiny.en.bin` or `ggml-base.en.bin`). Nothing is auto-downloaded.
-2. Point the config at the binary and model:
+2. Point the config at the binary and model (defaults already match the paths
+   above):
 
    ```yaml
    asr:
-     whisper_cpp_bin: "/opt/whisper.cpp/main"
-     whisper_model_path: "/opt/whisper.cpp/models/ggml-tiny.en.bin"
+     whisper_cpp_bin: "third_party/whisper.cpp/build/bin/whisper-cli"
+     whisper_model_path: "models/whisper/ggml-base.en.bin"
    ```
 3. Run:
 
@@ -150,28 +143,38 @@ restricted grammar for higher accuracy/lower latency on the closed command set.
    python -m voice_control.cli --config configs/voice_control.yaml --backend whisper_cpp --dry-run
    ```
 
-## Optional local LLM fallback
+## Alternative: Vosk ASR
 
-Off by default. To enable a tiny local instruction model (e.g.
-`Qwen2.5-0.5B-Instruct` or `SmolLM2-1.7B-Instruct`, quantized) via a local
-`llama.cpp` server:
+1. Download a small English model from <https://alphacephei.com/vosk/models>
+   (e.g. `vosk-model-small-en-us-0.15`), unpack it, and set
+   `asr.vosk_model_path`.
+2. Run with `--backend vosk`. Vosk runs in **grammar mode** (the closed command
+   vocabulary is passed as a restricted grammar for higher accuracy).
+
+## Using the Unitree G1 microphone (multicast)
+
+The G1's mic is **not** an ALSA/PortAudio device — `arecord` will not see it. The
+robot's onboard `voice` service multicasts raw 16 kHz mono PCM to
+`239.168.123.161:5555` on the `192.168.123.x` subnet, and ASR text on the DDS
+topic `rt/audio_msg`. This package consumes the **raw PCM** so it can run its own
+whisper.cpp ASR + parser.
+
+Set `audio.source: multicast` (or pass `--source multicast`). Run on a host on
+the robot subnet; the interface is auto-detected, or set `audio.mcast_iface_ip`
+to this host's `192.168.123.x` address.
 
 ```bash
-# start llama.cpp server locally, e.g.:
-./llama-server -m qwen2.5-0.5b-instruct-q4_k_m.gguf --port 8080
+# 1) Verify the mic stream (records a WAV, prints peak amplitude; no ASR):
+python -m voice_control.cli --source multicast --record mic.wav --record-seconds 5
+
+# 2) Full pipeline with whisper.cpp:
+python -m voice_control.cli --config configs/voice_control.yaml \
+    --source multicast --backend whisper_cpp --dry-run
 ```
 
-```yaml
-parser:
-  use_llm_fallback: true
-  llm_backend: "llama_cpp"
-  llm_endpoint: "http://127.0.0.1:8080/completion"
-```
-
-The LLM is grammar-constrained to emit JSON and prompted: *"Return only valid
-JSON. Use only the allowed tools. If unsupported or ambiguous, return clarify."*
-Its output is **validated with Pydantic** before anything is published — malformed
-or hallucinated tool calls are rejected and become `clarify`.
+> The stream is only live while the robot's voice assistant is **awake**. If
+> `--record` reports near-silence, wake the assistant and confirm
+> `audio.mcast_iface_ip`.
 
 ---
 
@@ -229,50 +232,20 @@ In **execute** mode each motion step is held for its `duration_s`, re-published
 at `planner_dt`, before advancing to the next step; the final step is left
 active. In dry-run the full plan (with durations) is printed without dwelling.
 
-### LLM-decided step durations
+### Per-step durations (deterministic)
 
-Set `parser.use_llm_duration: true` to have a **local** LLM dynamically decide
-how long each step should run before advancing. The estimator is given the parsed
-tool call (action + arguments) *and* the original phrase, so it can reason about
-distances that aren't planner fields — e.g. "walk 5 m at 3 m/s" gets a longer
-duration than "walk 3 m at 3 m/s". It returns a single `{"duration_s": ...}`
-(grammar-constrained, validated, and bounded by `llm_duration_min_s` /
-`llm_duration_max_s`).
-
-If the LLM is unavailable or returns garbage, a deterministic heuristic is used
-so the pipeline still works fully offline:
+Each step's `duration_s` is derived deterministically (no LLM) from the action,
+its arguments, and the spoken phrase — so "walk 5 m at 3 m/s" gets a longer dwell
+than "walk 3 m at 3 m/s":
 
 * navigation/crawl with a stated distance → `distance / speed + 1 s` settle,
 * in-place turn (speed 0) → ~1 s per 60° of heading,
 * posture → ~3 s, boxing → ~1.5 s, get_up → ~4.5 s,
 * otherwise → `publisher.segment_dwell_s` (default 3 s).
 
-The chosen duration is written back onto each step's `duration_s`, so it shows up
-in the printed plan and drives the execute-mode dwell. No cloud services.
-
-#### LLM backends
-
-`parser.llm_backend` selects how the local model is run:
-
-* `hf_transformers` (default) — loads a HuggingFace checkpoint **in-process** via
-  `transformers` + `torch`. Defaults to the LiquidAI LFM2 on-device reasoning
-  model (`tim_grpo230M_..._HF`, ~230M params, hybrid conv/attention, built for
-  Jetson/edge). Configure with `hf_model_id`, `hf_device` (`auto|cpu|cuda|mps`),
-  `hf_dtype`, `hf_max_new_tokens`, `hf_temperature`. The model/tokenizer are
-  loaded once and cached. Output parsing is robust to reasoning traces — it
-  accepts strict JSON, a `duration_s: N` fragment, a `\boxed{N}` answer, or a
-  bare trailing number.
-* `llama_cpp` — POSTs to a local llama.cpp `/completion` server at `llm_endpoint`
-  (grammar-constrained JSON).
-
-If the selected backend can't be loaded/reached, the deterministic heuristic
-above is used so the pipeline always works offline.
-
-Install the HF backend deps on the target device:
-
-```bash
-pip install "transformers>=4.55" torch
-```
+The result is bounded by `parser.duration_min_s` / `parser.duration_max_s`, then
+written back onto each step's `duration_s` so it shows up in the printed plan and
+drives the execute-mode dwell.
 
 ---
 
@@ -338,7 +311,6 @@ exposed; this interface only drives the closed kinematic-planner skill set.
    (`STYLE_TO_MODE` / `POSTURE_TO_MODE` / `BOXING_ACTION_TO_MODE` / …).
 3. Add synonyms/trigger words in `skills.py` and detection logic in `parser.py`.
 4. Add a unit test in `tests/test_voice_parser.py`.
-5. (Optional) mention the new phrase in the LLM prompt in `llm_parser.py`.
 
 The publisher mapping (`tool_call_to_planner_fields`) will pick up the new command
 automatically as long as it maps to a `LocomotionMode`.
@@ -347,6 +319,12 @@ automatically as long as it maps to a `LocomotionMode`.
 
 ## Troubleshooting microphones on Jetson
 
+* **Unitree G1**: the onboard mic is multicast, not ALSA — use
+  `audio.source: multicast` (see above), not `audio.device`. If `--record`
+  reports near-silence: wake the robot's voice assistant, and set
+  `audio.mcast_iface_ip` to this host's `192.168.123.x` address. The stream is
+  already 16 kHz mono, so no resampling is needed.
+* **Sound-card mics** (`source: device`):
 * List input devices: `python -c "import sounddevice as sd; print(sd.query_devices())"`
   then set `audio.device` to the desired index.
 * Install PortAudio if `sounddevice` import fails:

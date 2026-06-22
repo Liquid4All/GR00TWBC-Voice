@@ -1,9 +1,8 @@
 """Deterministic command parser.
 
 Turns a raw ASR transcript into a validated :class:`ParseResult` containing one
-closed tool call. This parser is fully deterministic and requires no model; the
-optional LLM parser (``llm_parser.py``) is only consulted as a fallback when
-this one returns ``clarify``.
+closed tool call. This parser is fully deterministic and requires no model. If a
+transcript is ambiguous or unsupported it returns a ``clarify`` tool call.
 
 Design notes
 ------------

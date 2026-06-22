@@ -4,15 +4,17 @@ Examples
 --------
     python -m voice_control.cli --config configs/voice_control.yaml --dry-run
     python -m voice_control.cli --config configs/voice_control.yaml --execute
-    python -m voice_control.cli --config configs/voice_control.yaml --backend vosk
     python -m voice_control.cli --config configs/voice_control.yaml --backend whisper_cpp
+    # Unitree G1 onboard mic (UDP multicast) + whisper.cpp:
+    python -m voice_control.cli --source multicast --backend whisper_cpp --dry-run
+    # Raw mic test (records a WAV, no ASR):
+    python -m voice_control.cli --source multicast --record mic.wav --record-seconds 5
     python -m voice_control.cli --text "walk forward slowly" --dry-run
-    python -m voice_control.cli --text "left jab" --dry-run
     python -m voice_control.cli --interactive-text --dry-run
 
 ``--text`` and ``--interactive-text`` bypass the microphone/ASR entirely and
-exercise the parser + safety + publisher path directly. This is the primary way
-to test the system without audio hardware.
+exercise the parser + publisher path directly. This is the primary way to test
+the system without audio hardware.
 """
 
 from __future__ import annotations
@@ -25,9 +27,8 @@ import time
 from typing import List, Optional
 
 from .config import Config, setup_logging
-from .duration import LLMDurationEstimator
+from .duration import HeuristicDurationEstimator
 from .feedback import Feedback
-from .llm_parser import LLMParser
 from .parser import DeterministicParser
 from .publisher import (
     PlannerCommandPublisher,
@@ -57,10 +58,7 @@ class VoicePipeline:
     ) -> None:
         self.config = config
         self.parser = DeterministicParser(config.parser.confidence_threshold)
-        self.llm = LLMParser(config.parser) if config.parser.use_llm_fallback else None
-        self.duration_estimator = (
-            LLMDurationEstimator(config.parser) if config.parser.use_llm_duration else None
-        )
+        self.duration_estimator = HeuristicDurationEstimator(config.parser)
         self.safety = SafetyGuard(config.safety)
         self.feedback = feedback or Feedback()
         self.dry_run = not self.safety.should_execute()
@@ -104,12 +102,6 @@ class VoicePipeline:
     def _parse_segment(self, text: str) -> ParseResult:
         result = self.parser.parse(text, boxing_active=self.boxing_active)
         log.info("RAW=%r NORMALIZED=%r", result.raw_text, result.normalized_text)
-        # Optional LLM fallback only when deterministic parsing was inconclusive.
-        if result.is_clarify() and self.llm is not None:
-            log.info("Deterministic parser unsure; consulting LLM fallback.")
-            llm_result = self.llm.parse(text, result.normalized_text)
-            if not llm_result.is_clarify():
-                result = llm_result
         return result
 
     def _handle_segment(self, result: ParseResult, original: str) -> ParseResult:
@@ -160,12 +152,9 @@ class VoicePipeline:
         elif final.tool in ("set_navigation", "set_crawl"):
             self.boxing_active = False
 
-        # Dynamically decide how long this step should run before advancing.
-        if (
-            self.duration_estimator is not None
-            and hasattr(final, "duration_s")
-            and getattr(final, "duration_s", None) is None
-        ):
+        # Deterministically decide how long this step should run before advancing
+        # (distance/speed, turn angle, posture settle time, ...).
+        if hasattr(final, "duration_s") and getattr(final, "duration_s", None) is None:
             est = self.duration_estimator.estimate(final, result.raw_text)
             final = final.model_copy(update={"duration_s": est})
             self.feedback.confirm(f"step duration ~{est:.1f}s")
@@ -270,25 +259,86 @@ def run_interactive_text(pipeline: VoicePipeline) -> None:
         pipeline.close()
 
 
-def run_microphone(pipeline: VoicePipeline, config: Config) -> None:  # pragma: no cover - hw
-    from .audio import MicrophoneCapture, VoiceActivityDetector, capture_utterance
-    from .wake import WakeGate
+def build_mic(config: Config):  # pragma: no cover - hw
+    """Construct the configured capture source (sound card or G1 multicast)."""
 
+    source = config.audio.source
+    if source == "multicast":
+        from .audio import MulticastMicrophone
+
+        return MulticastMicrophone(
+            sample_rate=config.audio.sample_rate,
+            group=config.audio.mcast_group,
+            port=config.audio.mcast_port,
+            iface_ip=config.audio.mcast_iface_ip,
+            frame_ms=config.audio.frame_ms,
+        )
+    if source == "device":
+        from .audio import MicrophoneCapture
+
+        return MicrophoneCapture(
+            config.audio.sample_rate, config.audio.device, frame_ms=config.audio.frame_ms
+        )
+    raise ValueError(f"Unknown audio source: {source!r} (use 'device' or 'multicast')")
+
+
+def build_asr(config: Config):  # pragma: no cover - hw
     backend = config.audio.backend
     if backend == "vosk":
         from .asr_vosk import VoskASR
 
-        asr = VoskASR(config.asr.vosk_model_path, config.audio.sample_rate)
-    elif backend == "whisper_cpp":
+        return VoskASR(config.asr.vosk_model_path, config.audio.sample_rate)
+    if backend == "whisper_cpp":
         from .asr_whisper_cpp import WhisperCppASR
 
-        asr = WhisperCppASR(
+        return WhisperCppASR(
             config.asr.whisper_cpp_bin, config.asr.whisper_model_path, config.audio.sample_rate
         )
-    else:
-        raise ValueError(f"Unknown audio backend: {backend!r}")
+    raise ValueError(f"Unknown audio backend: {backend!r}")
 
-    mic = MicrophoneCapture(config.audio.sample_rate, config.audio.device)
+
+def run_record(config: Config, out_path: str, seconds: float) -> int:  # pragma: no cover - hw
+    """Record N seconds from the configured source to a 16 kHz mono WAV.
+
+    Useful for verifying the Unitree G1 multicast mic before wiring up ASR:
+        python -m voice_control.cli --source multicast --record mic.wav --record-seconds 5
+    """
+
+    import wave
+
+    from .audio import capture_fixed
+
+    mic = build_mic(config)
+    mic.start()
+    try:
+        print(f"[voice] recording {seconds:.1f}s from {config.audio.source}... speak now")
+        pcm = capture_fixed(mic, seconds)
+    finally:
+        mic.stop()
+
+    if not pcm:
+        print("[voice] no audio captured. For the G1 mic: is the voice assistant awake, "
+              "and is audio.mcast_iface_ip your 192.168.123.x address?")
+        return 1
+    with wave.open(out_path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(config.audio.sample_rate)
+        wf.writeframes(pcm)
+    peak = max((abs(int.from_bytes(pcm[i:i + 2], "little", signed=True))
+                for i in range(0, len(pcm), 2)), default=0)
+    dur = (len(pcm) / 2) / config.audio.sample_rate
+    print(f"[voice] wrote {out_path} ({dur:.1f}s, peak amplitude {peak}). "
+          f"{'Looks like real audio.' if peak > 200 else 'Near-silence -- check the mic.'}")
+    return 0
+
+
+def run_microphone(pipeline: VoicePipeline, config: Config) -> None:  # pragma: no cover - hw
+    from .audio import VoiceActivityDetector, capture_utterance
+    from .wake import WakeGate
+
+    asr = build_asr(config)
+    mic = build_mic(config)
     vad = VoiceActivityDetector(config.audio.vad_aggressiveness, config.audio.sample_rate) \
         if config.audio.vad else None
     gate = WakeGate(config.wake.mode, config.wake.phrase)
@@ -296,22 +346,28 @@ def run_microphone(pipeline: VoicePipeline, config: Config) -> None:  # pragma: 
     mic.start()
     if not pipeline.dry_run:
         pipeline.start_stream_thread()
-    log.info("Microphone runtime started (backend=%s, wake=%s)", backend, config.wake.mode)
+    log.info("Microphone runtime started (backend=%s, source=%s, wake=%s)",
+             config.audio.backend, config.audio.source, config.wake.mode)
     sr = config.audio.sample_rate
     try:
         while True:
             if not gate.wait_for_trigger():
                 break
             print("[voice] listening... (speak now)")
+            mic.flush()
             pcm = capture_utterance(
                 mic, vad, config.audio.max_utterance_s, config.audio.phrase_timeout_s
             )
             dur_ms = (len(pcm) / 2) / sr * 1000.0  # 16-bit mono => 2 bytes/sample
             log.info("Captured %.0f ms of audio (%d bytes)", dur_ms, len(pcm))
             if not pcm:
-                print("[voice] no speech captured. Check the mic: is audio.device correct? "
-                      "Is the mic unmuted/gain up? Test with `arecord -d 3 t.wav && aplay t.wav`. "
-                      "You can also set audio.vad: false to force-record a fixed window.")
+                if config.audio.source == "multicast":
+                    print("[voice] no audio from the G1 mic. Is the robot's voice assistant "
+                          "awake? Is audio.mcast_iface_ip your 192.168.123.x address? "
+                          "Verify with `--record mic.wav --record-seconds 5`.")
+                else:
+                    print("[voice] no speech captured. Is audio.device correct and the mic "
+                          "unmuted/gain up? You can set audio.vad: false to force a fixed window.")
                 continue
             text = asr.transcribe(pcm)
             log.info("ASR transcript: %r", text)
@@ -341,15 +397,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--interactive-text", action="store_true", help="Type commands interactively")
     p.add_argument("--backend", type=str, default=None,
                    choices=["vosk", "whisper_cpp"], help="ASR backend override")
+    p.add_argument("--source", type=str, default=None,
+                   choices=["device", "multicast"],
+                   help="Capture source override (device sound card | G1 multicast mic)")
     p.add_argument("--dry-run", action="store_true", help="Never send to robot (default)")
     p.add_argument("--execute", action="store_true",
                    help="Actually send commands (requires config safety.execute: true)")
     p.add_argument("--publisher", type=str, default=None,
                    choices=["stub", "existing_repo", "zmq", "ros2"],
                    help="Publisher backend override")
-    p.add_argument("--llm-duration", action="store_true",
-                   help="Enable the LLM/heuristic per-step duration estimator "
-                        "(overrides parser.use_llm_duration)")
+    p.add_argument("--record", type=str, default=None, metavar="WAV",
+                   help="Record from the configured source to a WAV and exit (mic test)")
+    p.add_argument("--record-seconds", type=float, default=5.0,
+                   help="Duration for --record (default 5s)")
     return p
 
 
@@ -358,10 +418,10 @@ def load_config_with_overrides(args: argparse.Namespace) -> Config:
 
     if args.backend:
         config.audio.backend = args.backend
+    if args.source:
+        config.audio.source = args.source
     if args.publisher:
         config.publisher.backend = args.publisher
-    if args.llm_duration:
-        config.parser.use_llm_duration = True
 
     # Dry-run / execute resolution. Dry-run wins if both are passed.
     if args.execute and not args.dry_run:
@@ -382,6 +442,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
     config = load_config_with_overrides(args)
     setup_logging(config.logging)
+
+    if args.record is not None:
+        return run_record(config, args.record, args.record_seconds)
 
     pipeline = VoicePipeline(config)
 

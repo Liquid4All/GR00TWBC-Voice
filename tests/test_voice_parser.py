@@ -66,8 +66,8 @@ def test_move_forward_fast(parser):
     assert cmd.velocity_mps == pytest.approx(1.0)
 
 
-def test_sprint_pre_clamp_velocity(parser):
-    # The parser emits the nominal sprint velocity; safety clamps later.
+def test_sprint_velocity(parser):
+    # The parser emits the nominal sprint velocity; no clamping is applied.
     cmd = parser.parse("sprint forward").command
     assert isinstance(cmd, SetNavigationCommand)
     assert cmd.velocity_mps == pytest.approx(2.0)

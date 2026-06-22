@@ -1,14 +1,21 @@
 # Offline voice control configuration for the SONIC kinematic planner.
-# Safe defaults: dry-run is ON and execute is OFF. No cloud services are used.
+# Safe defaults: dry-run is ON and execute is OFF. No cloud services, no LLM.
 
 audio:
-  backend: "vosk"            # "vosk" (default) | "whisper_cpp"
+  backend: "whisper_cpp"     # "whisper_cpp" (default) | "vosk"
+  source: "device"           # "device" (sound card) | "multicast" (Unitree G1 mic)
   sample_rate: 16000
-  device: null               # mic device index; null = system default
+  device: null               # sound-card index (source=device); null = system default
+  frame_ms: 30               # VAD frame size; webrtcvad allows 10/20/30 only
   vad: true
   vad_aggressiveness: 2      # 0..3 (webrtcvad)
   phrase_timeout_s: 1.0      # trailing silence that ends an utterance
   max_utterance_s: 8.0
+  # Unitree G1 onboard mic (used when source == "multicast"). The robot's voice
+  # service multicasts 16 kHz mono PCM; join on the 192.168.123.x interface.
+  mcast_group: "239.168.123.161"
+  mcast_port: 5555
+  mcast_iface_ip: null       # this host's 192.168.123.x IP; null = auto-detect
 
 wake:
   mode: "push_to_talk"       # no_wake_debug | push_to_talk | wake_word | vad_only
@@ -17,25 +24,14 @@ wake:
 
 asr:
   vosk_model_path: "models/vosk-model-small-en-us"
-  whisper_cpp_bin: null      # path to compiled whisper.cpp binary
-  whisper_model_path: null   # path to ggml-tiny.en.bin / ggml-base.en.bin
+  # whisper.cpp: build the binary and download the base.en GGML model.
+  whisper_cpp_bin: "third_party/whisper.cpp/build/bin/whisper-cli"
+  whisper_model_path: "models/whisper/ggml-base.en.bin"
 
 parser:
-  use_llm_fallback: false
   confidence_threshold: 0.75
-  # "hf_transformers" loads a local HuggingFace checkpoint in-process;
-  # "llama_cpp" talks to a local llama.cpp /completion server.
-  llm_backend: "hf_transformers"
-  llm_endpoint: "http://127.0.0.1:8080/completion"   # used only by llama_cpp
-  # HuggingFace backend: LiquidAI LFM2 on-device reasoning model.
-  hf_model_id: "LiquidAI/tim_grpo230M_from978997_multidomain_lr3e-6_ent0.00_kl0.001_b256_n16_res4k_step100_987260_HF"
-  hf_device: "auto"            # auto | cpu | cuda | mps
-  hf_dtype: "auto"             # auto | float16 | bfloat16 | float32
-  hf_max_new_tokens: 256       # room for the reasoning model to think + answer
-  hf_temperature: 0.0          # 0 => greedy/deterministic
-  use_llm_duration: false      # LLM decides per-step duration in compound commands
-  llm_duration_min_s: 0.5      # sanity floor for an estimated step duration
-  llm_duration_max_s: 120.0    # sanity ceiling for an estimated step duration
+  duration_min_s: 0.5        # sanity floor for a per-step dwell (composed commands)
+  duration_max_s: 120.0      # sanity ceiling for a per-step dwell
 
 safety:
   dry_run: true              # never send to the robot unless false AND execute true

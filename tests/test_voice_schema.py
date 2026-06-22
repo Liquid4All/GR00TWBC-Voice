@@ -71,8 +71,8 @@ def test_missing_required_field_rejected():
         validate_tool_call({"tool": "set_navigation", "heading_deg": 0.0})
 
 
-def test_malformed_llm_output_rejected():
-    # Simulates a hallucinated tool call from the optional LLM parser.
+def test_malformed_tool_call_rejected():
+    # Any malformed/out-of-schema payload must be rejected before publishing.
     bad_payloads = [
         {"tool": "set_navigation", "velocity_mps": "fast", "heading_deg": 0.0},
         {"tool": "set_posture", "posture": "backflip"},

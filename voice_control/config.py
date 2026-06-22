@@ -22,13 +22,21 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class AudioConfig:
-    backend: str = "vosk"  # "vosk" | "whisper_cpp"
+    backend: str = "whisper_cpp"  # "whisper_cpp" (default) | "vosk"
+    # Capture source: "device" = local sound card via sounddevice/PortAudio;
+    # "multicast" = Unitree G1 onboard mic (UDP multicast, no ALSA device).
+    source: str = "device"
     sample_rate: int = 16000
     device: Optional[int] = None
+    frame_ms: int = 30            # VAD frame size (webrtcvad: 10/20/30 only)
     vad: bool = True
     vad_aggressiveness: int = 2
     phrase_timeout_s: float = 1.0
     max_utterance_s: float = 8.0
+    # Unitree G1 microphone multicast (used when source == "multicast").
+    mcast_group: str = "239.168.123.161"
+    mcast_port: int = 5555
+    mcast_iface_ip: Optional[str] = None  # local 192.168.123.x; auto-detect if null
 
 
 @dataclass
@@ -47,30 +55,11 @@ class AsrConfig:
 
 @dataclass
 class ParserConfig:
-    use_llm_fallback: bool = False
     confidence_threshold: float = 0.75
-    # Backend for any local LLM call: "llama_cpp" (HTTP /completion server) or
-    # "hf_transformers" (load a HuggingFace checkpoint in-process).
-    llm_backend: str = "hf_transformers"
-    llm_endpoint: str = "http://127.0.0.1:8080/completion"
-    # HuggingFace transformers backend (used when llm_backend == "hf_transformers").
-    # Default is the LiquidAI LFM2 on-device reasoning checkpoint.
-    hf_model_id: str = (
-        "LiquidAI/tim_grpo230M_from978997_multidomain_lr3e-6_ent0.00_"
-        "kl0.001_b256_n16_res4k_step100_987260_HF"
-    )
-    hf_device: str = "auto"          # auto | cpu | cuda | mps
-    hf_dtype: str = "auto"           # auto | float16 | bfloat16 | float32
-    hf_max_new_tokens: int = 256     # room for the reasoning model to think + answer
-    hf_temperature: float = 0.0      # 0 => greedy/deterministic
-    # Use a local LLM to dynamically decide how long each step of a composed
-    # command should run before advancing to the next one. When the LLM is
-    # unavailable, a deterministic heuristic (distance / speed, etc.) is used.
-    use_llm_duration: bool = False
-    # Sanity bounds for an estimated step duration (seconds). Not a safety clamp;
-    # just guards against a degenerate 0 s or a runaway estimate.
-    llm_duration_min_s: float = 0.5
-    llm_duration_max_s: float = 120.0
+    # Deterministic per-step dwell estimation for composed commands. Bounds
+    # (seconds) just guard against a degenerate 0 s or a runaway estimate.
+    duration_min_s: float = 0.5
+    duration_max_s: float = 120.0
 
 
 @dataclass
