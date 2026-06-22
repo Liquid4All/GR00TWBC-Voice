@@ -195,7 +195,7 @@ class LFMG1Parser:
             raw = self._generate(text)
             calls = extract_g1_tool_calls(raw)
         except Exception as exc:
-            log.warning("LFM G1 parse failed: %s", exc)
+            log.warning("LFM G1 parse failed: %s", exc, exc_info=log.isEnabledFor(logging.DEBUG))
             return [self._clarify(text, str(exc))]
         results: List[ParseResult] = []
         for name, args in calls:
@@ -274,11 +274,26 @@ class LFMG1Parser:
     def _ensure_model(self) -> None:
         if self._model is not None:
             return
+        import sys
+
         try:
             import torch
             from transformers import AutoModelForCausalLM, AutoTokenizer
-        except ImportError as exc:
-            raise RuntimeError("lfm_g1 requires torch and transformers") from exc
+        except Exception as exc:
+            hint = ""
+            if "get_int_max_str_digits" in str(exc) or "GenerationMixin" in str(exc):
+                hint = (
+                    " Likely torch/Python mismatch on Jetson: check "
+                    f"'python -c \"import sys; print(sys.version); "
+                    f"print(hasattr(sys, \\\"get_int_max_str_digits\\\"))\"'. "
+                    "Fix: upgrade Python to 3.11.9+ (or 3.12), or pin "
+                    "torch==2.2.2 transformers==4.44.2 accelerate==0.33.0."
+                )
+            raise RuntimeError(
+                f"lfm_g1 import failed in {sys.executable}: {exc}.{hint} "
+                "Install/reinstall with the same interpreter: "
+                f"{sys.executable} -m pip install torch transformers accelerate"
+            ) from exc
         log.info("Loading LFM G1 model %s ...", self.cfg.lfm_model_id)
         self._tokenizer = AutoTokenizer.from_pretrained(self.cfg.lfm_model_id)
         kwargs: Dict[str, Any] = {"device_map": self.cfg.lfm_device}
