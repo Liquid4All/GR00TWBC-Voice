@@ -1,20 +1,4 @@
-"""Closed tool-call schema for the SONIC voice control interface.
-
-Every spoken command must be reduced to exactly one of the validated Pydantic
-models defined here. Nothing else is ever published to the kinematic planner.
-
-The schema is intentionally small and *closed*: ``extra="forbid"`` means any
-stray or out-of-schema field is rejected at validation time.
-
-Coordinate / unit conventions (matching the planner ONNX interface and the
-repo's ZMQ ``planner`` topic):
-
-* ``velocity_mps``  -- target locomotion speed in metres / second.
-* ``heading_deg``   -- desired heading, degrees. 0 = forward, +90 = right,
-                       -90 = left, 180 = backward (see ``skills.heading_to_direction``).
-* ``pelvis_height_m`` -- target pelvis/root height in metres.
-* ``duration_s``    -- optional hold duration; ``None`` means "hold until changed".
-"""
+"""Closed Pydantic tool-call schema for the SONIC voice interface."""
 
 from __future__ import annotations
 
@@ -25,9 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 
 class _StrEnum(str, Enum):
-    """str-backed enum so values serialise to plain strings in JSON."""
-
-    def __str__(self) -> str:  # pragma: no cover - cosmetic
+    def __str__(self) -> str:
         return self.value
 
 
@@ -80,9 +62,6 @@ class StopCommand(_ToolBase):
 
 class SetNavigationCommand(_ToolBase):
     tool: Literal["set_navigation"] = "set_navigation"
-    # NOTE: safety clamps have been removed -- velocity is passed through to the
-    # planner unmodified. Only non-negativity is enforced (direction is encoded
-    # by heading, not the sign of the speed).
     velocity_mps: float = Field(ge=0.0)
     heading_deg: float
     style: NavStyle = NavStyle.WALKING
@@ -120,65 +99,34 @@ class ClarifyCommand(_ToolBase):
     original_text: str
 
 
-# Discriminated union over the closed tool set. The ``tool`` literal is the
-# discriminator, so validation is fast and unambiguous.
 PlannerToolCall = Annotated[
     Union[
-        StopCommand,
-        SetNavigationCommand,
-        SetCrawlCommand,
-        SetPostureCommand,
-        SetBoxingActionCommand,
-        GetUpCommand,
-        ClarifyCommand,
+        StopCommand, SetNavigationCommand, SetCrawlCommand, SetPostureCommand,
+        SetBoxingActionCommand, GetUpCommand, ClarifyCommand,
     ],
     Field(discriminator="tool"),
 ]
 
-# Reusable validator for dict/JSON payloads.
 PLANNER_TOOL_CALL_ADAPTER: TypeAdapter = TypeAdapter(PlannerToolCall)
 
-#: Tools that command physical motion (used by safety / dry-run gating).
-MOTION_TOOLS = {
-    "set_navigation",
-    "set_crawl",
-    "set_posture",
-    "set_boxing_action",
-    "get_up",
-}
+MOTION_TOOLS = {"set_navigation", "set_crawl", "set_posture", "set_boxing_action", "get_up"}
 
 
 def validate_tool_call(data: object) -> "PlannerToolCallType":
-    """Validate an arbitrary dict / JSON-like object into a tool call.
-
-    Raises ``pydantic.ValidationError`` if the payload does not match the
-    closed schema (this is how any malformed tool call is rejected).
-    """
-
     return PLANNER_TOOL_CALL_ADAPTER.validate_python(data)
 
 
 def tool_call_to_dict(tool_call: BaseModel) -> dict:
-    """Serialise a validated tool call to a plain JSON-able dict."""
-
     return tool_call.model_dump(mode="json")
 
 
-# Convenience type alias used in annotations across the package.
 PlannerToolCallType = Union[
-    StopCommand,
-    SetNavigationCommand,
-    SetCrawlCommand,
-    SetPostureCommand,
-    SetBoxingActionCommand,
-    GetUpCommand,
-    ClarifyCommand,
+    StopCommand, SetNavigationCommand, SetCrawlCommand, SetPostureCommand,
+    SetBoxingActionCommand, GetUpCommand, ClarifyCommand,
 ]
 
 
 class ParseResult(BaseModel):
-    """Result returned by the deterministic parser."""
-
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     ok: bool

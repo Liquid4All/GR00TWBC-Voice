@@ -1,49 +1,45 @@
-# Offline voice control configuration for the SONIC kinematic planner.
-# Safe defaults: dry-run is ON and execute is OFF. No cloud services, no LLM.
-
 audio:
-  backend: "whisper_cpp"     # "whisper_cpp" (default) | "vosk"
-  source: "device"           # "device" (sound card) | "multicast" (Unitree G1 mic)
+  backend: "whisper_cpp"
+  source: "device"
   sample_rate: 16000
-  device: null               # sound-card index (source=device); null = system default
-  frame_ms: 30               # VAD frame size; webrtcvad allows 10/20/30 only
+  device: null
+  frame_ms: 30
   vad: true
-  vad_aggressiveness: 2      # 0..3 (webrtcvad)
-  phrase_timeout_s: 1.0      # trailing silence that ends an utterance
+  vad_aggressiveness: 2
+  phrase_timeout_s: 1.0
   max_utterance_s: 8.0
-  # Unitree G1 onboard mic (used when source == "multicast"). The robot's voice
-  # service multicasts 16 kHz mono PCM; join on the 192.168.123.x interface.
   mcast_group: "239.168.123.161"
   mcast_port: 5555
-  mcast_iface_ip: null       # this host's 192.168.123.x IP; null = auto-detect
+  mcast_iface_ip: null
 
 wake:
-  mode: "push_to_talk"       # no_wake_debug | push_to_talk | wake_word | vad_only
+  mode: "push_to_talk"
   phrase: "hey sonic"
-  require_wake_word_for_motion: true
 
 asr:
-  vosk_model_path: "models/vosk-model-small-en-us"
-  # whisper.cpp: build the binary and download the base.en GGML model.
   whisper_cpp_bin: "third_party/whisper.cpp/build/bin/whisper-cli"
   whisper_model_path: "models/whisper/ggml-base.en.bin"
+  whisper_language: "en"
+  whisper_extra_args: null
 
 parser:
+  backend: "deterministic"
   confidence_threshold: 0.75
-  duration_min_s: 0.5        # sanity floor for a per-step dwell (composed commands)
-  duration_max_s: 120.0      # sanity ceiling for a per-step dwell
+  duration_min_s: 0.5
+  duration_max_s: 120.0
 
 safety:
-  dry_run: true              # never send to the robot unless false AND execute true
-  execute: false             # must be true (with dry_run false) to move a real robot
-  command_timeout_s: 2.0     # watchdog: stop if no fresh command within this window
+  dry_run: true
+  execute: false
+  command_timeout_s: 2.0
 
 publisher:
-  backend: "stub"            # stub | existing_repo | zmq | ros2
-  zmq_endpoint: "tcp://127.0.0.1:5556"   # ZMQManager planner-input port (NOT 5557 = debug out)
-  ros2_topic: "/sonic/planner_command"
-  planner_dt: 0.1            # 10 Hz replan/hold rate
-  segment_dwell_s: 3.0       # fallback per-step dwell when no duration is set/estimated
+  backend: "stub"
+  local_planner_endpoint: "tcp://127.0.0.1:5556"
+  zmq_endpoint: "tcp://127.0.0.1:5556"
+  zmq_bind: true
+  planner_dt: 0.1
+  segment_dwell_s: 3.0
 
 logging:
   level: "INFO"

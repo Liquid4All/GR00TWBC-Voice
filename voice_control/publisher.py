@@ -1,34 +1,12 @@
-"""Planner command publishers.
-
-A :class:`PlannerCommandPublisher` turns a *validated, safety-clamped* tool call
-into a high-level planner command and delivers it to the robot. It never emits
-joint targets or motion frames -- only the high-level fields the kinematic
-planner consumes (mode, movement direction, facing direction, speed, height).
-
-Adapters
---------
-* :class:`StubPublisher`        -- logs only (default / dry-run / tests).
-* :class:`ZmqPublisher`         -- the repo's real path: publishes ``command``
-                                   and ``planner`` ZMQ topics using the existing
-                                   wire builders in ``gear_sonic``.
-* :class:`ExistingRepoPublisher`-- thin alias of the ZMQ path with the single
-                                   integration point documented; raises a precise
-                                   error if the repo builders are unavailable.
-* :class:`Ros2Publisher`        -- optional ROS2 adapter (NOT the discovered
-                                   path; the deploy stack uses ZMQ).
-
-The :class:`PlannerStreamLoop` wraps any publisher to provide velocity-conditioned
-holding (re-publish the same command at up to 10 Hz, never integrating speed),
-immediate replan on change, and a command-timeout watchdog.
-"""
-
 from __future__ import annotations
 
 import abc
+import json
 import logging
+import struct
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Mapping, Optional, Sequence, Tuple
 
 from .config import PublisherConfig
 from .schemas import (
@@ -46,15 +24,69 @@ from .skills import LocomotionMode, heading_to_direction
 
 log = logging.getLogger(__name__)
 
+_HEADER_SIZE = 1280
 _FORWARD = (1.0, 0.0, 0.0)
 _SPEED_DEFAULT = -1.0
 _HEIGHT_DEFAULT = -1.0
 
 
+def _zmq_header(fields: list, version: int = 1, count: int = 1) -> bytes:
+    header_json = json.dumps({"v": version, "endian": "le", "count": count, "fields": fields},
+                             separators=(",", ":")).encode("utf-8")
+    if len(header_json) > _HEADER_SIZE:
+        raise ValueError(f"Header too large: {len(header_json)} > {_HEADER_SIZE}")
+    return header_json.ljust(_HEADER_SIZE, b"\x00")
+
+
+def build_command_message(start: bool, stop: bool, planner: bool, delta_heading: float | None = None) -> bytes:
+    fields = [
+        {"name": "start", "dtype": "u8", "shape": [1]},
+        {"name": "stop", "dtype": "u8", "shape": [1]},
+        {"name": "planner", "dtype": "u8", "shape": [1]},
+    ]
+    payload = b"".join((struct.pack("B", 1 if start else 0), struct.pack("B", 1 if stop else 0),
+                        struct.pack("B", 1 if planner else 0)))
+    if delta_heading is not None:
+        fields.append({"name": "delta_heading", "dtype": "f32", "shape": [1]})
+        payload += struct.pack("<f", float(delta_heading))
+    return b"command" + _zmq_header(fields) + payload
+
+
+def build_planner_message(
+    mode: int, movement: Sequence[float], facing: Sequence[float],
+    speed: float = -1.0, height: float = -1.0,
+) -> bytes:
+    if len(movement) != 3 or len(facing) != 3:
+        raise ValueError("movement and facing must have length 3")
+    fields = [
+        {"name": "mode", "dtype": "i32", "shape": [1]},
+        {"name": "movement", "dtype": "f32", "shape": [3]},
+        {"name": "facing", "dtype": "f32", "shape": [3]},
+        {"name": "speed", "dtype": "f32", "shape": [1]},
+        {"name": "height", "dtype": "f32", "shape": [1]},
+    ]
+    payload = b"".join((
+        struct.pack("<i", int(mode)),
+        struct.pack("<fff", *map(float, movement)),
+        struct.pack("<fff", *map(float, facing)),
+        struct.pack("<f", float(speed)),
+        struct.pack("<f", float(height)),
+    ))
+    return b"planner" + _zmq_header(fields) + payload
+
+
+def movement_state_from_planner_fields(fields: Mapping[str, object]) -> dict:
+    return {
+        "locomotion_mode": int(fields["mode"]),
+        "movement_direction": list(fields["movement"]),
+        "facing_direction": list(fields["facing"]),
+        "movement_speed": float(fields["speed"]),
+        "height": float(fields["height"]),
+    }
+
+
 @dataclass
 class PlannerFields:
-    """Low-level planner-topic fields derived from a tool call."""
-
     mode: int
     movement: Tuple[float, float, float]
     facing: Tuple[float, float, float]
@@ -73,13 +105,17 @@ class PlannerFields:
             "is_stop": self.is_stop,
         }
 
+    def to_movement_state(self) -> dict:
+        return movement_state_from_planner_fields(self.as_dict())
+
+    def to_planner_wire(self) -> bytes:
+        return build_planner_message(
+            mode=self.mode, movement=self.movement, facing=self.facing,
+            speed=self.speed, height=self.height,
+        )
+
 
 def tool_call_to_planner_fields(command: PlannerToolCallType) -> PlannerFields:
-    """Map a validated tool call onto planner-topic fields.
-
-    Only high-level fields are produced; the planner (not us) turns these into
-    motion.
-    """
 
     if isinstance(command, StopCommand):
         return PlannerFields(
@@ -140,12 +176,9 @@ def tool_call_to_planner_fields(command: PlannerToolCallType) -> PlannerFields:
     )
 
 
-# --------------------------------------------------------------------------- #
 # Publisher abstraction + adapters
-# --------------------------------------------------------------------------- #
 
 class PlannerCommandPublisher(abc.ABC):
-    """Abstract high-level planner command sink."""
 
     @abc.abstractmethod
     def publish(self, command: PlannerToolCallType) -> None:
@@ -160,16 +193,22 @@ class PlannerCommandPublisher(abc.ABC):
 
 
 class StubPublisher(PlannerCommandPublisher):
-    """Logs the final planner command. Used in dry-run and tests."""
 
     def __init__(self) -> None:
         self.published: List[dict] = []
 
     def publish(self, command: PlannerToolCallType) -> None:
         fields = tool_call_to_planner_fields(command)
-        record = {"tool_call": tool_call_to_dict(command), "planner_fields": fields.as_dict()}
+        record = {
+            "tool_call": tool_call_to_dict(command),
+            "planner_fields": fields.as_dict(),
+            "movement_state": fields.to_movement_state(),
+        }
         self.published.append(record)
-        log.info("[StubPublisher] %s -> %s", record["tool_call"], record["planner_fields"])
+        log.info(
+            "[StubPublisher] %s -> movement_state=%s",
+            record["tool_call"], record["movement_state"],
+        )
 
     def stop(self) -> None:
         self.publish(StopCommand())
@@ -179,21 +218,12 @@ class StubPublisher(PlannerCommandPublisher):
 
 
 class ZmqPublisher(PlannerCommandPublisher):
-    """Real planner path: publishes the repo's ZMQ ``command``/``planner`` topics.
-
-    This mirrors ``gear_sonic/scripts/pico_manager_thread_server.py``'s
-    ``PlannerStreamer``: a ``zmq.PUB`` socket sends a ``command`` message
-    (start/stop/planner) and ``planner`` messages (mode/movement/facing/
-    speed/height) built by ``gear_sonic.utils.teleop.zmq.zmq_planner_sender``.
-    """
 
     def __init__(self, endpoint: str, bind: bool = True) -> None:
         self.endpoint = endpoint
         self._bind = bind
         self._socket = None
         self._context = None
-        self._build_command_message = None
-        self._build_planner_message = None
         self._started = False
         self._connect()
 
@@ -204,11 +234,6 @@ class ZmqPublisher(PlannerCommandPublisher):
             raise RuntimeError(
                 "pyzmq is required for the ZMQ publisher. Install with `pip install pyzmq`."
             ) from exc
-
-        from gear_sonic.utils.teleop.zmq.zmq_planner_sender import (  # type: ignore
-            build_command_message,
-            build_planner_message,
-        )
 
         self._build_command_message = build_command_message
         self._build_planner_message = build_planner_message
@@ -230,15 +255,9 @@ class ZmqPublisher(PlannerCommandPublisher):
         if fields.is_stop:
             self.stop()
             return
-        msg = self._build_planner_message(
-            mode=fields.mode,
-            movement=list(fields.movement),
-            facing=list(fields.facing),
-            speed=fields.speed,
-            height=fields.height,
-        )
+        msg = fields.to_planner_wire()
         self._socket.send(msg)
-        log.info("[ZmqPublisher] planner <- %s", fields.as_dict())
+        log.info("[ZmqPublisher] planner <- %s", fields.to_movement_state())
 
     def stop(self) -> None:
         if self._socket is None:
@@ -256,107 +275,31 @@ class ZmqPublisher(PlannerCommandPublisher):
         log.debug("[ZmqPublisher] closed")
 
 
-class ExistingRepoPublisher(ZmqPublisher):
-    """Wires voice commands into the discovered SONIC planner command path.
+class LocalPlannerPublisher(ZmqPublisher):
 
-    The discovered path is the ZMQ ``command``/``planner`` topic protocol used by
-    the C++ ``ZMQManager`` deploy interface and the Python ``PlannerStreamer``.
-    This subclass is the single, clearly-marked integration point. If the repo's
-    wire builders cannot be imported, a precise error explains exactly what to
-    connect.
-    """
-
-    def _connect(self) -> None:  # pragma: no cover - requires gear_sonic + pyzmq
-        try:
-            super()._connect()
-        except (ImportError, ModuleNotFoundError) as exc:
-            raise RuntimeError(
-                "ExistingRepoPublisher could not connect to the SONIC planner path.\n"
-                "INTEGRATION POINT: this publisher expects to send the ZMQ 'command' and "
-                "'planner' topics consumed by the C++ ZMQManager "
-                "(gear_sonic_deploy/.../input_interface/zmq_manager.hpp).\n"
-                "It uses build_command_message / build_planner_message from "
-                "gear_sonic.utils.teleop.zmq.zmq_planner_sender.\n"
-                f"Underlying import error: {exc}\n"
-                "To fix: `pip install -e gear_sonic[teleop]` (provides pyzmq + the builders), "
-                "set publisher.zmq_endpoint to the deploy ZMQManager host:port, then re-run "
-                "with --execute and config safety.execute: true."
-            ) from exc
+    def __init__(self, endpoint: str = "tcp://127.0.0.1:5556") -> None:
+        super().__init__(endpoint=endpoint, bind=True)
 
 
-class Ros2Publisher(PlannerCommandPublisher):
-    """Optional ROS2 adapter.
-
-    NOTE: the deployed SONIC stack consumes ZMQ, not ROS2, for planner commands.
-    This adapter is provided for environments that bridge planner commands over a
-    ROS2 topic. It publishes a ``geometry_msgs/Twist``-style velocity hint plus
-    the mode as a separate field; adapt the message type to your bridge.
-    """
-
-    def __init__(self, topic: str) -> None:
-        self.topic = topic
-        self._node = None
-        self._pub = None
-        self._rclpy = None
-        self._connect()
-
-    def _connect(self) -> None:  # pragma: no cover - requires ROS2
-        try:
-            import rclpy  # type: ignore
-            from geometry_msgs.msg import Twist  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError(
-                "Ros2Publisher requires a ROS2 (rclpy) environment. NOTE: the SONIC deploy "
-                "stack uses ZMQ for planner commands; prefer ExistingRepoPublisher unless you "
-                "have a ROS2 bridge. Underlying import error: " + str(exc)
-            ) from exc
-        self._rclpy = rclpy
-        if not rclpy.ok():
-            rclpy.init()
-        self._node = rclpy.create_node("sonic_voice_control")
-        self._pub = self._node.create_publisher(Twist, self.topic, 10)
-        log.info("[Ros2Publisher] publishing on %s", self.topic)
-
-    def publish(self, command: PlannerToolCallType) -> None:  # pragma: no cover - requires ROS2
-        from geometry_msgs.msg import Twist  # type: ignore
-
-        fields = tool_call_to_planner_fields(command)
-        msg = Twist()
-        speed = fields.speed if fields.speed > 0 else 0.0
-        msg.linear.x = float(fields.movement[0]) * speed
-        msg.linear.y = float(fields.movement[1]) * speed
-        msg.angular.z = 0.0
-        self._pub.publish(msg)
-        log.info("[Ros2Publisher] %s (mode=%d)", fields.as_dict(), fields.mode)
-
-    def stop(self) -> None:  # pragma: no cover - requires ROS2
-        from geometry_msgs.msg import Twist  # type: ignore
-
-        self._pub.publish(Twist())
-
-    def close(self) -> None:  # pragma: no cover - requires ROS2
-        if self._node is not None:
-            self._node.destroy_node()
+class ExistingRepoPublisher(LocalPlannerPublisher):
+    pass
 
 
 def build_publisher(cfg: PublisherConfig) -> PlannerCommandPublisher:
-    """Factory selecting a publisher adapter from config."""
 
     backend = cfg.backend.lower()
     if backend == "stub":
         return StubPublisher()
+    if backend in ("local_planner", "local", "onboard"):
+        return LocalPlannerPublisher(cfg.local_planner_endpoint)
     if backend == "zmq":
-        return ZmqPublisher(cfg.zmq_endpoint)
+        return ZmqPublisher(cfg.zmq_endpoint, bind=cfg.zmq_bind)
     if backend in ("existing_repo", "existing"):
-        return ExistingRepoPublisher(cfg.zmq_endpoint)
-    if backend == "ros2":
-        return Ros2Publisher(cfg.ros2_topic)
+        return ExistingRepoPublisher(cfg.local_planner_endpoint)
     raise ValueError(f"Unknown publisher backend: {cfg.backend!r}")
 
 
-# --------------------------------------------------------------------------- #
 # Stream loop: 10 Hz hold + watchdog
-# --------------------------------------------------------------------------- #
 
 @dataclass
 class StreamTick:
@@ -367,13 +310,6 @@ class StreamTick:
 
 @dataclass
 class PlannerStreamLoop:
-    """Velocity-conditioned holding + replan-on-change + command-timeout watchdog.
-
-    Call :meth:`set_command` when a new command is accepted, and :meth:`tick`
-    every loop iteration (the runtime drives this at <= 10 Hz). Holding a command
-    re-publishes the *same* command (no speed integration). If no new command
-    arrives within ``command_timeout_s``, the loop publishes a single safety stop.
-    """
 
     publisher: PlannerCommandPublisher
     command_timeout_s: float = 2.0

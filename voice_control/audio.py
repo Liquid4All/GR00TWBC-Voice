@@ -1,18 +1,4 @@
-"""Microphone capture and voice-activity detection.
-
-Two capture sources are provided, both yielding 16-bit mono PCM frames:
-
-* :class:`MicrophoneCapture` -- a local sound card via ``sounddevice`` /
-  PortAudio (laptops, USB mics).
-* :class:`MulticastMicrophone` -- the Unitree G1 onboard microphone, which is
-  NOT an ALSA device: the robot's ``voice`` service multicasts raw 16 kHz mono
-  PCM to a UDP group (default ``239.168.123.161:5555`` on the
-  ``192.168.123.x`` robot subnet). This source only needs the standard library.
-
-All heavy audio dependencies (``sounddevice``, ``webrtcvad``) are imported
-lazily so the package (and its tests) import cleanly on machines without audio
-hardware or those libraries. ``--text`` mode never touches this module.
-"""
+"""Microphone capture, VAD, wake gating, and operator feedback."""
 
 from __future__ import annotations
 
@@ -22,6 +8,7 @@ import socket
 import struct
 import threading
 from dataclasses import dataclass
+from enum import Enum
 from typing import Iterator, Optional
 
 log = logging.getLogger(__name__)
@@ -38,11 +25,6 @@ class MicrophoneError(RuntimeError):
 
 
 class MicrophoneCapture:
-    """Threaded microphone capture into a frame queue.
-
-    Produces 16-bit mono PCM frames of ``frame_ms`` length. Designed so the
-    audio thread never blocks the control / planner loops.
-    """
 
     def __init__(
         self,
@@ -121,12 +103,6 @@ class MicrophoneCapture:
 
 
 def find_robot_subnet_ip(prefix: str = "192.168.123.") -> Optional[str]:
-    """Return this host's IPv4 address on the Unitree robot subnet, if any.
-
-    Mirrors the SDK's ``get_local_ip_for_multicast``: multicast membership must
-    be joined on the NIC that faces the robot, otherwise the kernel may pick the
-    wrong interface and deliver all-zero / no data.
-    """
 
     candidates: list[str] = []
     try:  # pragma: no cover - platform dependent
@@ -151,16 +127,6 @@ def find_robot_subnet_ip(prefix: str = "192.168.123.") -> Optional[str]:
 
 
 class MulticastMicrophone:
-    """Unitree G1 microphone via UDP multicast (16 kHz mono 16-bit PCM).
-
-    The robot's ``voice`` service streams raw PCM to ``group:port``. We join the
-    multicast group on the robot-subnet interface, then reassemble the byte
-    stream into fixed ``frame_ms`` frames so the VAD / ASR path is identical to
-    the sound-card source.
-
-    Note: the stream is only active while the robot's voice assistant is awake;
-    when idle you will receive nothing (or zeroed packets).
-    """
 
     def __init__(
         self,
@@ -260,7 +226,6 @@ class MulticastMicrophone:
 
 
 class VoiceActivityDetector:
-    """Thin wrapper over webrtcvad (optional)."""
 
     def __init__(self, aggressiveness: int = 2, sample_rate: int = 16000) -> None:
         self.sample_rate = sample_rate
@@ -287,11 +252,6 @@ def capture_utterance(
     max_utterance_s: float,
     phrase_timeout_s: float,
 ) -> bytes:
-    """Collect PCM for one utterance, ending after a trailing silence.
-
-    Returns concatenated 16-bit PCM bytes. Blocks until the utterance completes
-    or ``max_utterance_s`` elapses.
-    """
 
     collected = bytearray()
     speech_started = False
@@ -315,7 +275,6 @@ def capture_utterance(
 
 
 def capture_fixed(mic, seconds: float) -> bytes:
-    """Collect a fixed window of PCM (no VAD). Useful for a raw mic test."""
 
     collected = bytearray()
     elapsed_ms = 0.0
@@ -325,3 +284,84 @@ def capture_fixed(mic, seconds: float) -> bytes:
         if elapsed_ms >= seconds * 1000:
             break
     return bytes(collected)
+
+
+def build_capture(cfg) -> MicrophoneCapture | MulticastMicrophone:
+
+    if cfg.source == "multicast":
+        return MulticastMicrophone(
+            sample_rate=cfg.sample_rate,
+            group=cfg.mcast_group,
+            port=cfg.mcast_port,
+            iface_ip=cfg.mcast_iface_ip,
+            frame_ms=cfg.frame_ms,
+        )
+    if cfg.source == "device":
+        return MicrophoneCapture(cfg.sample_rate, cfg.device, frame_ms=cfg.frame_ms)
+    raise ValueError(f"Unknown audio source: {cfg.source!r} (use 'device' or 'multicast')")
+
+
+class Feedback:
+    def __init__(self, enable_tts: bool = False) -> None:
+        self._engine = None
+        if enable_tts:
+            try:
+                import pyttsx3  # type: ignore
+                self._engine = pyttsx3.init()
+            except Exception as exc:
+                log.warning("pyttsx3 unavailable (%s); console feedback only.", exc)
+
+    def notify(self, message: str) -> None:
+        log.info("[feedback] %s", message)
+        print(f"[voice] {message}")
+        if self._engine:
+            try:
+                self._engine.say(message)
+                self._engine.runAndWait()
+            except Exception as exc:
+                log.debug("TTS failed: %s", exc)
+
+    def confirm(self, command_summary: str) -> None:
+        self.notify(f"OK: {command_summary}")
+
+    def clarify(self, question: str) -> None:
+        self.notify(f"Clarify: {question}")
+
+    def warn(self, message: str) -> None:
+        log.warning("[feedback] %s", message)
+        print(f"[voice][warn] {message}")
+
+
+class WakeMode(str, Enum):
+    NO_WAKE_DEBUG = "no_wake_debug"
+    PUSH_TO_TALK = "push_to_talk"
+    WAKE_WORD = "wake_word"
+    VAD_ONLY = "vad_only"
+
+
+class WakeGate:
+    def __init__(self, mode: str, phrase: str = "hey sonic") -> None:
+        try:
+            self.mode = WakeMode(mode)
+        except ValueError:
+            log.warning("Unknown wake mode %r; falling back to push_to_talk.", mode)
+            self.mode = WakeMode.PUSH_TO_TALK
+        self.phrase = phrase
+
+    def wait_for_trigger(self) -> bool:
+        if self.mode in (WakeMode.NO_WAKE_DEBUG, WakeMode.VAD_ONLY):
+            return True
+        if self.mode == WakeMode.PUSH_TO_TALK:
+            try:
+                input("[voice] Press Enter to talk (Ctrl-C to quit)... ")
+                return True
+            except (EOFError, KeyboardInterrupt):
+                return False
+        if self.mode == WakeMode.WAKE_WORD:
+            log.warning("wake_word not wired; falling back to push_to_talk.")
+            try:
+                input("[voice] Press Enter to talk... ")
+                return True
+            except (EOFError, KeyboardInterrupt):
+                return False
+        return True

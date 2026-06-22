@@ -14,16 +14,14 @@ pyyaml>=6.0            # optional but recommended for YAML configs
 # --- Tests ------------------------------------------------------------------
 pytest>=7.0
 
-# --- Real planner path (ZMQ to the SONIC C++ ZMQManager) --------------------
+# --- Real planner path (ZMQ to the onboard C++ ZMQManager) ------------------
 pyzmq>=25.0
-# NOTE: the ExistingRepoPublisher also needs the repo's wire builders:
-#   pip install -e gear_sonic/            (provides build_command_message / build_planner_message)
+# Wire builders live in voice_control/zmq_wire.py (no gear_sonic import needed).
 
 # --- Offline ASR + microphone capture ---------------------------------------
 # Default ASR is whisper.cpp (base.en) -- built/installed OUTSIDE pip; set the
 # binary + model paths in configs/voice_control.yaml (asr.whisper_cpp_bin /
 # asr.whisper_model_path). See voice_control/README.md.
-vosk>=0.3.45          # alternative ASR backend (audio.backend: vosk)
 sounddevice>=0.4.6    # sound-card capture (source=device; needs PortAudio).
                       # NOT needed for the Unitree G1 multicast mic (stdlib only).
 webrtcvad>=2.0.10     # voice activity detection

@@ -1,11 +1,3 @@
-"""Configuration loading for the voice control package.
-
-The config is a small set of nested dataclasses with defaults that exactly
-mirror ``configs/voice_control.yaml``. YAML is loaded with PyYAML when present;
-otherwise a tiny built-in parser handles the (simple, list-free) config so the
-package stays usable offline without extra dependencies.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields, is_dataclass
@@ -16,56 +8,46 @@ from typing import Any, Dict, Optional
 log = logging.getLogger(__name__)
 
 
-# --------------------------------------------------------------------------- #
-# Dataclasses
-# --------------------------------------------------------------------------- #
-
 @dataclass
 class AudioConfig:
-    backend: str = "whisper_cpp"  # "whisper_cpp" (default) | "vosk"
-    # Capture source: "device" = local sound card via sounddevice/PortAudio;
-    # "multicast" = Unitree G1 onboard mic (UDP multicast, no ALSA device).
+    backend: str = "whisper_cpp"
     source: str = "device"
     sample_rate: int = 16000
     device: Optional[int] = None
-    frame_ms: int = 30            # VAD frame size (webrtcvad: 10/20/30 only)
+    frame_ms: int = 30
     vad: bool = True
     vad_aggressiveness: int = 2
     phrase_timeout_s: float = 1.0
     max_utterance_s: float = 8.0
-    # Unitree G1 microphone multicast (used when source == "multicast").
     mcast_group: str = "239.168.123.161"
     mcast_port: int = 5555
-    mcast_iface_ip: Optional[str] = None  # local 192.168.123.x; auto-detect if null
+    mcast_iface_ip: Optional[str] = None
 
 
 @dataclass
 class WakeConfig:
-    mode: str = "push_to_talk"  # no_wake_debug | push_to_talk | wake_word | vad_only
+    mode: str = "push_to_talk"
     phrase: str = "hey sonic"
-    require_wake_word_for_motion: bool = True
 
 
 @dataclass
 class AsrConfig:
-    vosk_model_path: str = "models/vosk-model-small-en-us"
     whisper_cpp_bin: Optional[str] = None
     whisper_model_path: Optional[str] = None
+    whisper_language: str = "en"
+    whisper_extra_args: Optional[list[str]] = None
 
 
 @dataclass
 class ParserConfig:
+    backend: str = "deterministic"
     confidence_threshold: float = 0.75
-    # Deterministic per-step dwell estimation for composed commands. Bounds
-    # (seconds) just guard against a degenerate 0 s or a runaway estimate.
     duration_min_s: float = 0.5
     duration_max_s: float = 120.0
 
 
 @dataclass
 class SafetyConfig:
-    # Velocity/height clamps were removed; only the dry-run/execute gate and the
-    # command-timeout watchdog remain.
     dry_run: bool = True
     execute: bool = False
     command_timeout_s: float = 2.0
@@ -73,15 +55,11 @@ class SafetyConfig:
 
 @dataclass
 class PublisherConfig:
-    backend: str = "stub"  # stub | existing_repo | zmq | ros2
-    # Planner *input* path for the C++ ZMQManager (--zmq-port, default 5556).
-    # NOTE: 5557 is the deploy debug *output* port, not a command input.
+    backend: str = "stub"
+    local_planner_endpoint: str = "tcp://127.0.0.1:5556"
     zmq_endpoint: str = "tcp://127.0.0.1:5556"
-    ros2_topic: str = "/sonic/planner_command"
-    # Planner replan period (seconds). 0.1 == 10 Hz, per the paper / deploy stack.
+    zmq_bind: bool = True
     planner_dt: float = 0.1
-    # Default time to hold each step of a composed/sequential command when no
-    # explicit duration is given (seconds).
     segment_dwell_s: float = 3.0
 
 
@@ -101,7 +79,6 @@ class Config:
     publisher: PublisherConfig = field(default_factory=PublisherConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
-    # ------------------------------------------------------------------ #
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> "Config":
         cfg = cls()
@@ -120,8 +97,7 @@ class Config:
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "Config":
-        data = _load_yaml(Path(path))
-        return cls.from_dict(data)
+        return cls.from_dict(_load_yaml(Path(path)))
 
     def to_dict(self) -> Dict[str, Any]:
         return _dataclass_to_dict(self)
@@ -129,10 +105,10 @@ class Config:
 
 def _apply_dataclass(instance: Any, overrides: Dict[str, Any]) -> Any:
     for key, value in overrides.items():
-        if not hasattr(instance, key):
+        if hasattr(instance, key):
+            setattr(instance, key, value)
+        else:
             log.warning("Unknown config key %r; ignoring", key)
-            continue
-        setattr(instance, key, value)
     return instance
 
 
@@ -142,17 +118,12 @@ def _dataclass_to_dict(obj: Any) -> Any:
     return obj
 
 
-# --------------------------------------------------------------------------- #
-# YAML loading (PyYAML if available, else a minimal fallback)
-# --------------------------------------------------------------------------- #
-
 def _load_yaml(path: Path) -> Dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
     text = path.read_text(encoding="utf-8")
     try:
         import yaml  # type: ignore
-
         return yaml.safe_load(text) or {}
     except ImportError:
         log.warning("PyYAML not installed; using minimal built-in YAML parser.")
@@ -168,41 +139,26 @@ def _coerce_scalar(token: str) -> Any:
         return True
     if low in ("false", "no"):
         return False
-    if (token.startswith('"') and token.endswith('"')) or (
-        token.startswith("'") and token.endswith("'")
-    ):
+    if (token.startswith('"') and token.endswith('"')) or (token.startswith("'") and token.endswith("'")):
         return token[1:-1]
-    try:
-        return int(token)
-    except ValueError:
-        pass
-    try:
-        return float(token)
-    except ValueError:
-        pass
+    for caster in (int, float):
+        try:
+            return caster(token)
+        except ValueError:
+            pass
     return token
 
 
 def _minimal_yaml_parse(text: str) -> Dict[str, Any]:
-    """Parse the limited YAML subset used by voice_control.yaml.
-
-    Supports two-level nested mappings of scalars. Lists / multi-line / anchors
-    are *not* supported (the shipped config does not use them).
-    """
-
     root: Dict[str, Any] = {}
     current_section: Optional[Dict[str, Any]] = None
     for raw_line in text.splitlines():
         line = raw_line.split("#", 1)[0].rstrip()
-        if not line.strip():
+        if not line.strip() or ":" not in line.strip():
             continue
         indent = len(line) - len(line.lstrip(" "))
-        stripped = line.strip()
-        if ":" not in stripped:
-            continue
-        key, _, value = stripped.partition(":")
-        key = key.strip()
-        value = value.strip()
+        key, _, value = line.strip().partition(":")
+        key, value = key.strip(), value.strip()
         if indent == 0:
             if value == "":
                 current_section = {}
@@ -219,8 +175,6 @@ def _minimal_yaml_parse(text: str) -> Dict[str, Any]:
 
 
 def setup_logging(cfg: LoggingConfig) -> None:
-    """Configure root logging from the logging config section."""
-
     level = getattr(logging, str(cfg.level).upper(), logging.INFO)
     handlers: list[logging.Handler] = [logging.StreamHandler()]
     if cfg.log_file:
@@ -228,11 +182,9 @@ def setup_logging(cfg: LoggingConfig) -> None:
             log_path = Path(cfg.log_file)
             log_path.parent.mkdir(parents=True, exist_ok=True)
             handlers.append(logging.FileHandler(log_path))
-        except OSError as exc:  # pragma: no cover - filesystem dependent
+        except OSError as exc:
             log.warning("Could not open log file %s: %s", cfg.log_file, exc)
     logging.basicConfig(
-        level=level,
-        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-        handlers=handlers,
-        force=True,
+        level=level, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        handlers=handlers, force=True,
     )
