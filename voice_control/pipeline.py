@@ -104,6 +104,17 @@ class VoicePipeline:
         self._stop_stream = threading.Event()
 
     def process_text(self, text: str) -> List[ParseResult]:
+        if hasattr(self.parser, "parse_plan"):
+            plan = self.parser.parse_plan(text, boxing_active=self.boxing_active)
+            results: List[ParseResult] = []
+            for i, parsed in enumerate(plan):
+                if len(plan) > 1:
+                    log.info("PLAN step %d/%d (lfm)", i + 1, len(plan))
+                parsed.raw_text = text
+                handled = self._handle_segment(parsed, original=text, skip_duration_estimate=True)
+                results.append(handled)
+                self._execute_command(handled, last=(i == len(plan) - 1))
+            return results
         segments = split_segments(text) or [text]
         results: List[ParseResult] = []
         for i, segment in enumerate(segments):
@@ -119,7 +130,9 @@ class VoicePipeline:
         log.info("RAW=%r NORMALIZED=%r", result.raw_text, result.normalized_text)
         return result
 
-    def _handle_segment(self, result: ParseResult, original: str) -> ParseResult:
+    def _handle_segment(
+        self, result: ParseResult, original: str, *, skip_duration_estimate: bool = False,
+    ) -> ParseResult:
         command = result.command
         log.info("PARSED=%s confidence=%.2f", command_summary(command), result.confidence)
         if command is None or isinstance(command, ClarifyCommand):
@@ -148,7 +161,11 @@ class VoicePipeline:
             self.boxing_active = True
         elif final.tool in ("set_navigation", "set_crawl"):
             self.boxing_active = False
-        if hasattr(final, "duration_s") and getattr(final, "duration_s", None) is None:
+        if (
+            not skip_duration_estimate
+            and hasattr(final, "duration_s")
+            and getattr(final, "duration_s", None) is None
+        ):
             est = self.duration_estimator.estimate(final, result.raw_text)
             final = final.model_copy(update={"duration_s": est})
             self.feedback.confirm(f"step duration ~{est:.1f}s")

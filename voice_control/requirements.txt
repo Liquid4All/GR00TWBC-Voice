@@ -32,3 +32,8 @@ openwakeword>=0.6.0
 
 # --- Offline text-to-speech feedback ----------------------------------------
 pyttsx3>=2.90
+
+# --- LFM G1 function-calling parser (parser.backend: lfm_g1) ---------------
+torch>=2.0
+transformers>=4.40
+accelerate>=0.27

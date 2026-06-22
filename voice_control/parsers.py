@@ -622,3 +622,6 @@ def _build_deterministic(cfg: ParserConfig) -> CommandParser:
 @register("model")
 def _build_model(cfg: ParserConfig) -> CommandParser:
     return ModelParser(cfg)
+
+
+from . import lfm_g1  # noqa: F401 — registers "lfm_g1" backend
