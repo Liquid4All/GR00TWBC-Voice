@@ -1,5 +1,3 @@
-"""Voice pipeline: parse -> safety -> publish."""
-
 from __future__ import annotations
 
 import logging
@@ -19,7 +17,7 @@ from .publisher import (
     build_publisher,
     tool_call_to_planner_fields,
 )
-from .schemas import ClarifyCommand, ParseResult, SetBoxingActionCommand, StopCommand
+from .parsers import ClarifyCommand, ParseResult, SetBoxingActionCommand, StopCommand
 
 log = logging.getLogger(__name__)
 _DISTANCE_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*(?:meters?|metres?|m)\b", re.IGNORECASE)
@@ -69,7 +67,7 @@ class HeuristicDurationEstimator:
             else:
                 est = 3.0
         elif tool == "set_posture":
-            est = 3.0
+            est = 3.0  # this 3 is random, fix it later
         elif tool == "set_boxing_action":
             est = 1.5
         elif tool == "get_up":
@@ -113,7 +111,7 @@ class VoicePipeline:
                 log.info("PLAN step %d/%d: %r", i + 1, len(segments), segment)
             handled = self._handle_segment(self._parse_segment(segment), original=text)
             results.append(handled)
-            self._dwell_if_executing(handled, last=(i == len(segments) - 1))
+            self._execute_command(handled, last=(i == len(segments) - 1))
         return results
 
     def _parse_segment(self, text: str) -> ParseResult:
@@ -161,7 +159,7 @@ class VoicePipeline:
             normalized_text=result.normalized_text, command=final, reason="accepted",
         )
 
-    def _dwell_if_executing(self, result: ParseResult, last: bool) -> None:
+    def _execute_command(self, result: ParseResult, last: bool) -> None:
         if self.dry_run or last:
             return
         command = result.command
@@ -173,7 +171,7 @@ class VoicePipeline:
             self.stream.tick()
             time.sleep(self.config.publisher.planner_dt)
 
-    def start_stream_thread(self) -> None:
+    def start_stream(self) -> None:
         if self._stream_thread is not None:
             return
 
@@ -220,7 +218,7 @@ def run_text_once(pipeline: VoicePipeline, text: str) -> List[ParseResult]:
 def run_interactive_text(pipeline: VoicePipeline) -> None:
     print("Interactive text mode. Type a command, or 'quit' to exit.")
     if not pipeline.dry_run:
-        pipeline.start_stream_thread()
+        pipeline.start_stream()
     try:
         while True:
             try:
@@ -267,7 +265,7 @@ def run_microphone(pipeline: VoicePipeline, config: Config) -> None:
     gate = WakeGate(config.wake.mode, config.wake.phrase)
     mic.start()
     if not pipeline.dry_run:
-        pipeline.start_stream_thread()
+        pipeline.start_stream()
     sr = config.audio.sample_rate
     try:
         while True:

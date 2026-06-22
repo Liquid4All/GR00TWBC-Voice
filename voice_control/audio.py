@@ -43,7 +43,7 @@ class MicrophoneCapture:
 
     def _require_sounddevice(self):
         try:
-            import sounddevice as sd  # type: ignore
+            import sounddevice as sd
         except ImportError as exc:
             raise MicrophoneError(
                 "sounddevice is required for microphone capture. "
@@ -55,16 +55,16 @@ class MicrophoneCapture:
     def start(self) -> None:
         sd = self._require_sounddevice()
 
-        def _callback(indata, frames, time_info, status):  # pragma: no cover - hw
+        def _callback(indata, frames, time_info, status):
             if status:
                 log.debug("audio status: %s", status)
             try:
                 self._queue.put_nowait(AudioFrame(bytes(indata), self.sample_rate))
             except queue.Full:
-                pass  # drop frames rather than block
+                pass
 
         self._stop.clear()
-        self._stream = sd.RawInputStream(  # pragma: no cover - hw
+        self._stream = sd.RawInputStream(
             samplerate=self.sample_rate,
             blocksize=self.frame_samples,
             device=self.device,
@@ -83,7 +83,6 @@ class MicrophoneCapture:
                 continue
 
     def flush(self) -> None:
-        """Drop any buffered frames (call right before a fresh utterance)."""
 
         while True:
             try:
@@ -93,7 +92,7 @@ class MicrophoneCapture:
 
     def stop(self) -> None:
         self._stop.set()
-        if self._stream is not None:  # pragma: no cover - hw
+        if self._stream is not None:
             try:
                 self._stream.stop()
                 self._stream.close()
@@ -105,13 +104,12 @@ class MicrophoneCapture:
 def find_robot_subnet_ip(prefix: str = "192.168.123.") -> Optional[str]:
 
     candidates: list[str] = []
-    try:  # pragma: no cover - platform dependent
+    try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             candidates.append(info[4][0])
     except OSError:
         pass
-    # Fallback: probe the address used to reach the robot subnet.
-    try:  # pragma: no cover - platform dependent
+    try:
         probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             probe.connect((prefix + "1", 9))
@@ -154,9 +152,7 @@ class MulticastMicrophone:
         iface_ip = self.iface_ip or find_robot_subnet_ip() or "0.0.0.0"
         if iface_ip == "0.0.0.0":
             log.warning(
-                "No 192.168.123.x interface found; joining multicast on INADDR_ANY. "
-                "If you receive no/zeroed audio, set audio.mcast_iface_ip to this "
-                "host's robot-subnet IP."
+                "No 192.168.123.x interface found."
             )
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -175,7 +171,7 @@ class MulticastMicrophone:
             self.group, self.port, iface_ip, self.sample_rate,
         )
 
-    def _recv_loop(self) -> None:  # pragma: no cover - network/hardware
+    def _recv_loop(self) -> None:
         assert self._sock is not None
         while not self._stop.is_set():
             try:
@@ -193,7 +189,7 @@ class MulticastMicrophone:
                 try:
                     self._queue.put_nowait(AudioFrame(chunk, self.sample_rate))
                 except queue.Full:
-                    pass  # drop frames rather than block
+                    pass
 
     def frames(self) -> Iterator[AudioFrame]:
         while not self._stop.is_set():
@@ -203,8 +199,6 @@ class MulticastMicrophone:
                 continue
 
     def flush(self) -> None:
-        """Drop any buffered frames (call right before a fresh utterance)."""
-
         self._buffer.clear()
         while True:
             try:
@@ -214,10 +208,10 @@ class MulticastMicrophone:
 
     def stop(self) -> None:
         self._stop.set()
-        if self._thread is not None:  # pragma: no cover - hw
+        if self._thread is not None:
             self._thread.join(timeout=1.0)
             self._thread = None
-        if self._sock is not None:  # pragma: no cover - hw
+        if self._sock is not None:
             try:
                 self._sock.close()
             except OSError:
@@ -231,7 +225,7 @@ class VoiceActivityDetector:
         self.sample_rate = sample_rate
         self._vad = None
         try:
-            import webrtcvad  # type: ignore
+            import webrtcvad
 
             self._vad = webrtcvad.Vad(int(aggressiveness))
         except ImportError:
@@ -242,7 +236,7 @@ class VoiceActivityDetector:
             return True
         try:
             return self._vad.is_speech(frame.pcm, frame.sample_rate)
-        except Exception:  # pragma: no cover
+        except Exception:
             return True
 
 
@@ -257,7 +251,7 @@ def capture_utterance(
     speech_started = False
     silence_ms = 0.0
     elapsed_ms = 0.0
-    for frame in mic.frames():  # pragma: no cover - hardware dependent
+    for frame in mic.frames():
         elapsed_ms += mic.frame_ms
         is_speech = vad.is_speech(frame) if vad is not None else True
         if is_speech:
@@ -278,7 +272,7 @@ def capture_fixed(mic, seconds: float) -> bytes:
 
     collected = bytearray()
     elapsed_ms = 0.0
-    for frame in mic.frames():  # pragma: no cover - hardware dependent
+    for frame in mic.frames():
         collected.extend(frame.pcm)
         elapsed_ms += mic.frame_ms
         if elapsed_ms >= seconds * 1000:
@@ -353,14 +347,14 @@ class WakeGate:
             return True
         if self.mode == WakeMode.PUSH_TO_TALK:
             try:
-                input("[voice] Press Enter to talk (Ctrl-C to quit)... ")
+                input("press enter to talk ")
                 return True
             except (EOFError, KeyboardInterrupt):
                 return False
         if self.mode == WakeMode.WAKE_WORD:
             log.warning("wake_word not wired; falling back to push_to_talk.")
             try:
-                input("[voice] Press Enter to talk... ")
+                input("press enter to talk ")
                 return True
             except (EOFError, KeyboardInterrupt):
                 return False

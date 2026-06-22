@@ -4,27 +4,88 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from . import skills
 from .config import ParserConfig
-from .schemas import (
-    ClarifyCommand,
-    CrawlStyle,
-    GetUpCommand,
-    NavStyle,
-    ParseResult,
-    Posture,
-    SetBoxingActionCommand,
-    SetCrawlCommand,
-    SetNavigationCommand,
-    SetPostureCommand,
-    StopCommand,
-    StopReason,
-    validate_tool_call,
-)
+from .skills import BoxingAction, CrawlStyle, NavStyle, Posture, StopReason
+
+
+class _ToolBase(BaseModel):
+    model_config = ConfigDict(extra="forbid", use_enum_values=True)
+
+
+class StopCommand(_ToolBase):
+    tool: Literal["stop"] = "stop"
+    reason: StopReason = StopReason.USER_REQUEST
+
+
+class SetNavigationCommand(_ToolBase):
+    tool: Literal["set_navigation"] = "set_navigation"
+    velocity_mps: float = Field(ge=0.0)
+    heading_deg: float
+    style: NavStyle = NavStyle.WALKING
+    duration_s: Optional[float] = Field(default=None, ge=0.0)
+
+
+class SetCrawlCommand(_ToolBase):
+    tool: Literal["set_crawl"] = "set_crawl"
+    velocity_mps: float = Field(ge=0.0)
+    heading_deg: float
+    crawl_style: CrawlStyle = CrawlStyle.ELBOW_KNEE
+    duration_s: Optional[float] = Field(default=None, ge=0.0)
+
+
+class SetPostureCommand(_ToolBase):
+    tool: Literal["set_posture"] = "set_posture"
+    posture: Posture
+    pelvis_height_m: Optional[float] = Field(default=None, ge=0.0)
+    duration_s: Optional[float] = Field(default=None, ge=0.0)
+
+
+class SetBoxingActionCommand(_ToolBase):
+    tool: Literal["set_boxing_action"] = "set_boxing_action"
+    action: BoxingAction
+    duration_s: Optional[float] = Field(default=None, ge=0.0)
+
+
+class GetUpCommand(_ToolBase):
+    tool: Literal["get_up"] = "get_up"
+
+
+class ClarifyCommand(_ToolBase):
+    tool: Literal["clarify"] = "clarify"
+    question: str
+    original_text: str
+
+
+PlannerToolCallType = Union[
+    StopCommand, SetNavigationCommand, SetCrawlCommand, SetPostureCommand,
+    SetBoxingActionCommand, GetUpCommand, ClarifyCommand,
+]
+PlannerToolCall = Annotated[PlannerToolCallType, Field(discriminator="tool")]
+_TOOL_ADAPTER: TypeAdapter = TypeAdapter(PlannerToolCall)
+
+
+def validate_tool_call(data: object) -> PlannerToolCallType:
+    return _TOOL_ADAPTER.validate_python(data)
+
+
+def tool_call_to_dict(tool_call: BaseModel) -> dict:
+    return tool_call.model_dump(mode="json")
+
+
+class ParseResult(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    ok: bool
+    confidence: float = Field(ge=0.0, le=1.0)
+    raw_text: str
+    normalized_text: str
+    command: Optional[PlannerToolCallType] = None
+    reason: Optional[str] = None
+
 
 log = logging.getLogger(__name__)
 
@@ -268,9 +329,6 @@ class DeterministicParser:
     def _parse_boxing(
         self, raw_text: str, norm: str, boxing_active: bool
     ) -> Optional[ParseResult]:
-        from .schemas import BoxingAction
-
-        # Explicit punches / hooks.
         if re.search(r"\bleft\b.*\bjab\b", norm) or re.search(r"\bjab\b.*\bleft\b", norm):
             return self._ok(raw_text, norm, SetBoxingActionCommand(action=BoxingAction.LEFT_JAB), CONF_STRONG)
         if re.search(r"\bright\b.*\bjab\b", norm) or re.search(r"\bjab\b.*\bright\b", norm):

@@ -1,10 +1,50 @@
 from __future__ import annotations
 
 import math
-from enum import IntEnum
+from enum import Enum, IntEnum
 from typing import Dict, List, Tuple
 
-from .schemas import BoxingAction, CrawlStyle, NavStyle, Posture
+
+class _StrEnum(str, Enum):
+    pass
+
+
+class NavStyle(_StrEnum):
+    WALKING = "walking"
+    RUNNING = "running"
+    HAPPY = "happy"
+    STEALTH = "stealth"
+    INJURED = "injured"
+    DRUNKEN = "drunken"
+
+
+class CrawlStyle(_StrEnum):
+    ELBOW_KNEE = "elbow_knee"
+    HAND_CRAWL = "hand_crawl"
+
+
+class Posture(_StrEnum):
+    SQUAT = "squat"
+    KNEEL_ONE_LEG = "kneel_one_leg"
+    KNEEL_TWO_LEGS = "kneel_two_legs"
+    STAND = "stand"
+
+
+class BoxingAction(_StrEnum):
+    IDLE = "idle"
+    STANCE = "stance"
+    BLOCK = "block"
+    LEFT_JAB = "left_jab"
+    RIGHT_JAB = "right_jab"
+    LEFT_HOOK = "left_hook"
+    RIGHT_HOOK = "right_hook"
+    SIDE_STEP = "side_step"
+
+
+class StopReason(_StrEnum):
+    USER_REQUEST = "user_request"
+    SAFETY = "safety"
+    UNKNOWN = "unknown"
 
 
 class LocomotionMode(IntEnum):

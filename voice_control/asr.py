@@ -1,5 +1,3 @@
-"""whisper.cpp ASR backend with registry for custom backends."""
-
 from __future__ import annotations
 
 import logging

@@ -5,7 +5,7 @@ from .config import Config
 from .parser import DeterministicParser, normalize_text, parse_plan, parse_text, split_segments
 from .parsers import CommandParser, build_parser
 from .pipeline import HeuristicDurationEstimator, SafetyGuard, VoicePipeline, extract_distance_m
-from .schemas import (
+from .parsers import (
     ClarifyCommand,
     GetUpCommand,
     ParseResult,
