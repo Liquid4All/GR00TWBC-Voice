@@ -436,14 +436,24 @@ def serve(cfg: Optional[ParserConfig] = None, host: str = "0.0.0.0", port: int =
 
 def diagnose_lfm_env() -> int:
     """Print torch/transformers state for debugging Jetson installs."""
+    rc = 0
     print(f"python: {sys.executable}")
     print(f"version: {sys.version}")
+    has_int_digits = hasattr(sys, "get_int_max_str_digits")
+    print(f"sys.get_int_max_str_digits: {has_int_digits}")
+    if "rc" in sys.version.lower() or not has_int_digits:
+        print(
+            "WARNING: Python looks like an old 3.11 pre-release. torch 2.12 + transformers 5 "
+            "need a final Python 3.11.9+ or 3.12 — recreate .venv_voice with a proper interpreter."
+        )
+        rc = 1
     for pkg in ("torch", "transformers", "tokenizers", "accelerate"):
         try:
             mod = __import__(pkg)
             print(f"{pkg}: {getattr(mod, '__version__', '?')} @ {getattr(mod, '__file__', '?')}")
         except Exception as exc:
             print(f"{pkg}: FAILED ({exc})")
+            rc = 1
     try:
         import torch
         t = torch.tensor([1.0])
@@ -458,7 +468,18 @@ def diagnose_lfm_env() -> int:
         print("AutoModelForCausalLM: ok")
     except Exception as exc:
         print(f"transformers model import FAILED: {exc}")
+        cause = exc.__cause__
+        while cause is not None:
+            print(f"  caused by: {type(cause).__name__}: {cause}")
+            cause = cause.__cause__
+        if not has_int_digits:
+            print(
+                "Fix: install Python 3.11.9+ or 3.12, recreate the venv, reinstall packages, "
+                "or use parser.lfm_remote_url with the server on a laptop."
+            )
         return 1
+    if rc:
+        return rc
     print("LFM local env looks OK.")
     return 0
 
