@@ -29,7 +29,7 @@ parser:
   duration_max_s: 120.0
   # LFM G1 function-calling parser (set backend: lfm_g1)
   lfm_model_id: "LiquidAI/LFM2.5-250M-G1-FCv1"
-  lfm_device: "auto"
+  lfm_device: cpu
   lfm_max_new_tokens: 512
   lfm_temperature: 0.1
   lfm_top_k: 50

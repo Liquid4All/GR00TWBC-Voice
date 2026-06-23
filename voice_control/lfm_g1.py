@@ -174,10 +174,30 @@ def _ast_calls(source: str) -> List[Tuple[str, Dict[str, Any]]]:
 
 
 def extract_g1_tool_calls(text: str) -> List[Tuple[str, Dict[str, Any]]]:
-    match = _TOOL_CALL_RE.search(text)
-    if not match:
-        raise ValueError(f"no {_TOOL_CALL_START}...{_TOOL_CALL_END} block found")
-    return _ast_calls(match.group(1))
+    ends = (_TOOL_CALL_END, "<|tool_call_end|>")
+    for end in ends:
+        pat = re.compile(
+            re.escape(_TOOL_CALL_START) + r"\s*(\[.*?\])\s*" + re.escape(end),
+            re.DOTALL,
+        )
+        match = pat.search(text)
+        if match:
+            return _ast_calls(match.group(1))
+    start = text.find(_TOOL_CALL_START)
+    if start >= 0:
+        rest = text[start + len(_TOOL_CALL_START):]
+        lb = rest.find("[")
+        if lb >= 0:
+            depth = 0
+            for i, ch in enumerate(rest[lb:], start=lb):
+                if ch == "[":
+                    depth += 1
+                elif ch == "]":
+                    depth -= 1
+                    if depth == 0:
+                        return _ast_calls(rest[lb : i + 1])
+    preview = text[:800] + ("..." if len(text) > 800 else "")
+    raise ValueError(f"no tool call block in model output: {preview!r}")
 
 
 class G1ToolMapper:
@@ -262,8 +282,9 @@ class LFMG1Parser:
             raw = self._generate(text)
             calls = extract_g1_tool_calls(raw)
         except Exception as exc:
-            log.warning("LFM G1 parse failed: %s", exc, exc_info=log.isEnabledFor(logging.DEBUG))
-            return [self._clarify(text, str(exc))]
+            msg = str(exc) or repr(exc)
+            log.warning("LFM G1 parse failed (%s): %s", type(exc).__name__, msg, exc_info=True)
+            return [self._clarify(text, msg)]
         results: List[ParseResult] = []
         for name, args in calls:
             filled = self._defaults(name, args)
@@ -322,25 +343,43 @@ class LFMG1Parser:
             return self._generate_remote(text)
         return self._generate_local(text)
 
+    def _resolve_device(self, torch: Any) -> str:
+        want = (self.cfg.lfm_device or "cpu").lower()
+        if want != "auto":
+            return want
+        if torch.cuda.is_available():
+            try:
+                torch.zeros(1, device="cuda")
+                return "auto"
+            except Exception as exc:
+                log.warning("CUDA reported available but unusable (%s); using CPU", exc)
+        else:
+            log.warning("CUDA unavailable; using CPU for LFM (set parser.lfm_device: cpu to silence)")
+        return "cpu"
+
     def _generate_local(self, text: str) -> str:
+        import torch
+
         self._ensure_model()
+        device = self._model.device
         messages = [
             {"role": "system", "content": G1_SYSTEM_PROMPT},
             {"role": "user", "content": self._user_prompt(text)},
         ]
         inputs = self._tokenizer.apply_chat_template(
             messages, add_generation_prompt=True, return_tensors="pt",
-        ).to(self._model.device)
-        out = self._model.generate(
-            inputs,
-            max_new_tokens=self.cfg.lfm_max_new_tokens,
-            do_sample=self.cfg.lfm_temperature > 0,
-            temperature=max(self.cfg.lfm_temperature, 1e-5),
-            top_k=self.cfg.lfm_top_k,
-            repetition_penalty=1.05,
-        )
+        ).to(device)
+        with torch.no_grad():
+            out = self._model.generate(
+                inputs,
+                max_new_tokens=self.cfg.lfm_max_new_tokens,
+                do_sample=self.cfg.lfm_temperature > 0,
+                temperature=max(self.cfg.lfm_temperature, 1e-5),
+                top_k=self.cfg.lfm_top_k,
+                repetition_penalty=1.05,
+            )
         text_out = self._tokenizer.decode(out[0][inputs.shape[-1]:], skip_special_tokens=False)
-        log.debug("LFM raw output: %r", text_out)
+        log.info("LFM raw output: %r", text_out[:500])
         return text_out
 
     def _generate_remote(self, text: str) -> str:
@@ -376,12 +415,17 @@ class LFMG1Parser:
                 f"transformers model import failed after torch {torch.__version__}: {exc}. "
                 f"Run: python -m voice_control.lfm_g1 --diagnose"
             ) from exc
-        log.info("Loading LFM G1 model %s (torch %s) ...", self.cfg.lfm_model_id, torch.__version__)
+        device = self._resolve_device(torch)
+        log.info("Loading LFM G1 model %s (torch %s, device %s) ...", self.cfg.lfm_model_id, torch.__version__, device)
         load_kw: Dict[str, Any] = {"trust_remote_code": True}
         self._tokenizer = AutoTokenizer.from_pretrained(self.cfg.lfm_model_id, **load_kw)
-        kwargs: Dict[str, Any] = {"device_map": self.cfg.lfm_device, "trust_remote_code": True}
-        if self.cfg.lfm_device != "cpu":
-            kwargs["torch_dtype"] = torch.bfloat16
+        kwargs: Dict[str, Any] = {"trust_remote_code": True}
+        if device == "cpu":
+            kwargs["device_map"] = "cpu"
+            kwargs["dtype"] = torch.float32
+        else:
+            kwargs["device_map"] = device
+            kwargs["dtype"] = torch.bfloat16
         self._model = AutoModelForCausalLM.from_pretrained(self.cfg.lfm_model_id, **kwargs)
         self._model.eval()
 

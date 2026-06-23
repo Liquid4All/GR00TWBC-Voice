@@ -45,7 +45,7 @@ class ParserConfig:
     duration_min_s: float = 0.5
     duration_max_s: float = 120.0
     lfm_model_id: str = "LiquidAI/LFM2.5-250M-G1-FCv1"
-    lfm_device: str = "auto"
+    lfm_device: str = "cpu"
     lfm_max_new_tokens: int = 512
     lfm_temperature: float = 0.1
     lfm_top_k: int = 50

@@ -34,7 +34,7 @@ def test_extract_g1_tool_calls_multi():
 
 
 def test_extract_g1_tool_calls_missing_block():
-    with pytest.raises(ValueError, match="no .* block found"):
+    with pytest.raises(ValueError, match="no tool call block"):
         extract_g1_tool_calls("walk forward")
 
 
