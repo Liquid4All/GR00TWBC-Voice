@@ -26,8 +26,9 @@ sounddevice>=0.4.6    # sound-card capture (source=device; needs PortAudio).
                       # NOT needed for the Unitree G1 multicast mic (stdlib only).
 webrtcvad>=2.0.10     # voice activity detection
 
-# --- Wake word (pick one) ---------------------------------------------------
+# --- Wake word (openWakeWord — small ONNX models, auto-download on first run) ---
 openwakeword>=0.6.0
+onnxruntime>=1.16
 # pvporcupine>=3.0     # alternative wake-word engine (needs an access key)
 
 # --- Offline text-to-speech feedback ----------------------------------------

@@ -279,14 +279,13 @@ def run_microphone(pipeline: VoicePipeline, config: Config) -> None:
     asr = build_asr(config.audio, config.asr)
     mic = build_capture(config.audio)
     vad = VoiceActivityDetector(config.audio.vad_aggressiveness, config.audio.sample_rate) if config.audio.vad else None
-    gate = WakeGate(config.wake.mode, config.wake.phrase)
+    gate = WakeGate(config.wake, sample_rate=config.audio.sample_rate)
     mic.start()
     if not pipeline.dry_run:
         pipeline.start_stream()
-    sr = config.audio.sample_rate
     try:
         while True:
-            if not gate.wait_for_trigger():
+            if not gate.wait_for_trigger(mic):
                 break
             print("[voice] listening... (speak now)")
             mic.flush()

@@ -9,7 +9,7 @@ import struct
 import threading
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Union
 
 log = logging.getLogger(__name__)
 
@@ -333,26 +333,124 @@ class WakeMode(str, Enum):
     VAD_ONLY = "vad_only"
 
 
-class WakeGate:
-    def __init__(self, mode: str, phrase: str = "hey sonic") -> None:
-        try:
-            self.mode = WakeMode(mode)
-        except ValueError:
-            log.warning("Unknown wake mode %r; falling back to push_to_talk.", mode)
-            self.mode = WakeMode.PUSH_TO_TALK
-        self.phrase = phrase
+# Built-in openWakeWord models (https://github.com/dscripka/openWakeWord).
+OWW_BUILTIN_MODELS = frozenset({
+    "alexa", "hey_jarvis", "hey_mycroft", "hey_rhasspy", "timer", "weather",
+})
 
-    def wait_for_trigger(self) -> bool:
+OWW_PHRASE_ALIASES = {
+    "hey jarvis": "hey_jarvis",
+    "hey sonic": "hey_jarvis",
+    "hey mycroft": "hey_mycroft",
+    "hey rhasspy": "hey_rhasspy",
+}
+
+
+def resolve_oww_model(model: str, phrase: str) -> str:
+    key = (model or "").strip().lower().replace(" ", "_")
+    if key in OWW_BUILTIN_MODELS:
+        return key
+    alias = OWW_PHRASE_ALIASES.get(phrase.strip().lower())
+    if alias:
+        return alias
+    return key or "hey_jarvis"
+
+
+class OpenWakeWordDetector:
+    """Streaming wake word detection via openWakeWord (ONNX, ~1–2 MB per model)."""
+
+    def __init__(
+        self,
+        model_name: str,
+        threshold: float = 0.5,
+        patience: int = 2,
+        inference_framework: str = "onnx",
+    ) -> None:
+        self.model_name = model_name
+        self.threshold = threshold
+        self.patience = max(0, patience)
+        self.inference_framework = inference_framework
+        self._model = None
+        self._score_key: Optional[str] = None
+
+    def _ensure(self) -> None:
+        if self._model is not None:
+            return
+        try:
+            import openwakeword
+            from openwakeword.model import Model
+        except ImportError as exc:
+            raise MicrophoneError(
+                "wake_word mode requires openwakeword + onnxruntime. "
+                "Install: pip install openwakeword onnxruntime"
+            ) from exc
+        log.info("Downloading/loading openWakeWord model %r ...", self.model_name)
+        openwakeword.utils.download_models()
+        self._model = Model(
+            wakeword_models=[self.model_name],
+            inference_framework=self.inference_framework,
+        )
+        for key in self._model.models.keys():
+            if self.model_name in key:
+                self._score_key = key
+                break
+        self._score_key = self._score_key or next(iter(self._model.models), self.model_name)
+        log.info("Wake word ready: say %r (model=%s, threshold=%.2f)", self.model_name, self._score_key, self.threshold)
+
+    def wait(self, mic: Union[MicrophoneCapture, "MulticastMicrophone"]) -> bool:
+        import numpy as np
+
+        self._ensure()
+        assert self._model is not None and self._score_key is not None
+        print(f"[voice] listening for wake word ({self.model_name!r})...")
+        predict_kw: dict = {}
+        if self.patience > 0:
+            predict_kw["patience"] = {self._score_key: self.patience}
+            predict_kw["threshold"] = {self._score_key: self.threshold}
+        for frame in mic.frames():
+            audio = np.frombuffer(frame.pcm, dtype=np.int16)
+            scores = self._model.predict(audio, **predict_kw)
+            score = float(scores.get(self._score_key, 0.0))
+            if self.patience > 0:
+                if score > 0.0:
+                    log.info("Wake word detected (%s score=%.2f)", self._score_key, score)
+                    print(f"[voice] wake word detected ({self.model_name})")
+                    return True
+            elif score >= self.threshold:
+                log.info("Wake word detected (%s score=%.2f)", self._score_key, score)
+                print(f"[voice] wake word detected ({self.model_name})")
+                return True
+        return False
+
+
+class WakeGate:
+    def __init__(self, cfg, sample_rate: int = 16000) -> None:
+        self.cfg = cfg
+        self.sample_rate = sample_rate
+        try:
+            self.mode = WakeMode(cfg.mode)
+        except ValueError:
+            log.warning("Unknown wake mode %r; falling back to push_to_talk.", cfg.mode)
+            self.mode = WakeMode.PUSH_TO_TALK
+        self.phrase = cfg.phrase
+        self._oww: Optional[OpenWakeWordDetector] = None
+        if self.mode == WakeMode.WAKE_WORD:
+            model = resolve_oww_model(getattr(cfg, "oww_model", "hey_jarvis"), cfg.phrase)
+            self._oww = OpenWakeWordDetector(
+                model_name=model,
+                threshold=float(getattr(cfg, "oww_threshold", 0.5)),
+                patience=int(getattr(cfg, "oww_patience", 2)),
+                inference_framework=str(getattr(cfg, "oww_inference_framework", "onnx")),
+            )
+
+    def wait_for_trigger(self, mic: Optional[Union[MicrophoneCapture, MulticastMicrophone]] = None) -> bool:
         if self.mode in (WakeMode.NO_WAKE_DEBUG, WakeMode.VAD_ONLY):
             return True
-        if self.mode == WakeMode.PUSH_TO_TALK:
-            try:
-                input("press enter to talk ")
-                return True
-            except (EOFError, KeyboardInterrupt):
-                return False
         if self.mode == WakeMode.WAKE_WORD:
-            log.warning("wake_word not wired; falling back to push_to_talk.")
+            if mic is None:
+                raise MicrophoneError("wake_word mode requires an active microphone capture")
+            return self._oww.wait(mic) if self._oww else False
+        if self.mode == WakeMode.PUSH_TO_TALK:
             try:
                 input("press enter to talk ")
                 return True

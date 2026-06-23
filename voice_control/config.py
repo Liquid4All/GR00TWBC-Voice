@@ -27,7 +27,11 @@ class AudioConfig:
 @dataclass
 class WakeConfig:
     mode: str = "push_to_talk"
-    phrase: str = "hey sonic"
+    phrase: str = "hey jarvis"
+    oww_model: str = "hey_jarvis"
+    oww_threshold: float = 0.5
+    oww_patience: int = 2
+    oww_inference_framework: str = "onnx"
 
 
 @dataclass

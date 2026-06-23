@@ -13,8 +13,12 @@ audio:
   mcast_iface_ip: null
 
 wake:
-  mode: "push_to_talk"
-  phrase: "hey sonic"
+  mode: wake_word
+  phrase: "hey jarvis"
+  oww_model: hey_jarvis
+  oww_threshold: 0.5
+  oww_patience: 2
+  oww_inference_framework: onnx
 
 asr:
   whisper_cpp_bin: "third_party/whisper.cpp/build/bin/whisper-cli"
