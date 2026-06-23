@@ -28,7 +28,6 @@ from .parsers import (
     StopCommand,
     StopReason,
     register,
-    validate_tool_call,
 )
 from .skills import BoxingAction
 
@@ -256,11 +255,11 @@ class G1ToolMapper:
             return SetPostureCommand(posture=_POSTURE_MODES[mode], duration_s=duration)
         if mode in _CRAWL_MODES:
             return SetCrawlCommand(
-                velocity_mps=max(0.0, velocity), heading_deg=heading,
+                velocity_mps=velocity, heading_deg=heading,
                 crawl_style=_CRAWL_MODES[mode], duration_s=duration,
             )
         return SetNavigationCommand(
-            velocity_mps=max(0.0, velocity), heading_deg=heading,
+            velocity_mps=velocity, heading_deg=heading,
             style=self._nav_style(), duration_s=duration,
         )
 
@@ -295,12 +294,8 @@ class LFMG1Parser:
                 return [self._clarify(text, f"{name}: {exc}")]
             if cmd is None:
                 continue
-            try:
-                cmd = validate_tool_call(cmd.model_dump(mode="json"))
-            except Exception as exc:
-                return [self._clarify(text, f"schema: {exc}")]
             results.append(ParseResult(
-                ok=True, confidence=CONF_STRONG, raw_text=text, normalized_text=text.strip().lower(),
+                ok=True, confidence=CONF_STRONG, raw_text=text, normalized_text=text.strip(),
                 command=cmd, reason="lfm_g1",
             ))
         return results or [self._clarify(text, "no executable tool calls")]
