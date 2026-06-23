@@ -8,6 +8,7 @@ import logging
 import re
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -95,6 +96,20 @@ _STOP_REASON = {
     "sequence_complete": StopReason.UNKNOWN, "user_stop": StopReason.SAFETY,
     "segment_complete": StopReason.UNKNOWN,
 }
+
+
+def resolve_lfm_model_path(model_id: str) -> tuple[str, bool]:
+    """Return (path_or_hub_id, local_files_only). Supports ~/GR00T-WBC/models/lfm_g1."""
+    raw = model_id.strip()
+    if raw.startswith("/GR00T-WBC"):
+        path = Path.home() / raw.lstrip("/")
+    else:
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = Path.cwd() / path
+    if path.is_dir() and (path / "config.json").is_file():
+        return str(path.resolve()), True
+    return raw, False
 
 
 def _parse_version(version: str) -> Tuple[int, ...]:
@@ -414,17 +429,21 @@ class LFMG1Parser:
                 f"Run: python -m voice_control.lfm_g1 --diagnose"
             ) from exc
         device = self._resolve_device(torch)
-        log.info("Loading LFM G1 model %s (torch %s, device %s) ...", self.cfg.lfm_model_id, torch.__version__, device)
-        load_kw: Dict[str, Any] = {"trust_remote_code": True}
-        self._tokenizer = AutoTokenizer.from_pretrained(self.cfg.lfm_model_id, **load_kw)
-        kwargs: Dict[str, Any] = {"trust_remote_code": True}
+        model_path, local_only = resolve_lfm_model_path(self.cfg.lfm_model_id)
+        log.info(
+            "Loading LFM G1 model %s (torch %s, device %s, local_only=%s) ...",
+            model_path, torch.__version__, device, local_only,
+        )
+        load_kw: Dict[str, Any] = {"trust_remote_code": True, "local_files_only": local_only}
+        self._tokenizer = AutoTokenizer.from_pretrained(model_path, **load_kw)
+        kwargs: Dict[str, Any] = {"trust_remote_code": True, "local_files_only": local_only}
         if device == "cpu":
             kwargs["device_map"] = "cpu"
             kwargs["dtype"] = torch.float32
         else:
             kwargs["device_map"] = device
             kwargs["dtype"] = torch.bfloat16
-        self._model = AutoModelForCausalLM.from_pretrained(self.cfg.lfm_model_id, **kwargs)
+        self._model = AutoModelForCausalLM.from_pretrained(model_path, **kwargs)
         self._model.eval()
 
     def _clarify(self, text: str, reason: str) -> ParseResult:

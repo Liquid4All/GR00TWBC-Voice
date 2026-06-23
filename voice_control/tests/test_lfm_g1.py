@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from voice_control.config import ParserConfig
-from voice_control.lfm_g1 import G1ToolMapper, extract_g1_tool_calls
+from voice_control.lfm_g1 import G1ToolMapper, extract_g1_tool_calls, resolve_lfm_model_path
 from voice_control.parsers import NavStyle, SetNavigationCommand, StopCommand, StopReason
 
 
@@ -57,6 +57,15 @@ def test_mapper_stop():
 
 def test_mapper_select_motion_mode_returns_none():
     assert G1ToolMapper(ParserConfig()).map("select_motion_mode", {"motion_set": "locomotion", "mode": "walk"}) is None
+
+
+def test_resolve_lfm_model_path_local(tmp_path):
+    ckpt = tmp_path / "lfm_g1"
+    ckpt.mkdir()
+    (ckpt / "config.json").write_text("{}")
+    path, local = resolve_lfm_model_path(str(ckpt))
+    assert path == str(ckpt.resolve())
+    assert local is True
 
 
 def test_defaults_fill_duration():
