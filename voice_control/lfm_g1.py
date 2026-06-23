@@ -108,27 +108,36 @@ def _parse_version(version: str) -> Tuple[int, ...]:
     return tuple(parts)
 
 
-def _require_local_torch() -> None:
+def _require_local_torch() -> "Any":
     try:
         import torch
-        from transformers.utils import is_torch_available
     except Exception as exc:
         raise RuntimeError(
-            f"lfm_g1 needs torch>=2.4 in {sys.executable}: {exc}. "
-            f"Run: {sys.executable} -m pip install 'torch>=2.4.0' 'transformers>=5.0.0'"
+            f"torch failed to import in {sys.executable}: {exc}. "
+            "On Jetson, PyPI torch often does not work — use NVIDIA's JetPack wheel."
         ) from exc
-    if not is_torch_available():
-        raise RuntimeError(
-            f"transformers disabled PyTorch (installed torch {torch.__version__}, need >=2.4). "
-            f"Upgrade: {sys.executable} -m pip install -U 'torch>=2.4.0'. "
-            "On Jetson use NVIDIA's PyTorch wheel for your JetPack, or set parser.lfm_remote_url "
-            "and run `python -m voice_control.lfm_g1 --serve` on a laptop."
-        )
+    try:
+        torch.tensor([1.0])
+    except Exception as exc:
+        raise RuntimeError(f"torch imported but is broken: {exc}") from exc
     if _parse_version(torch.__version__) < (2, 4, 0):
         raise RuntimeError(
-            f"torch {torch.__version__} is too old for transformers 5 (need >=2.4). "
-            f"Upgrade: {sys.executable} -m pip install -U 'torch>=2.4.0'"
+            f"torch {torch.__version__} is too old (need >=2.4). "
+            f"Your pip upgrade may not have worked on aarch64/Jetson. "
+            f"Check: {sys.executable} -m pip show torch"
         )
+    from transformers.utils import is_torch_available
+
+    if not is_torch_available():
+        raise RuntimeError(
+            f"transformers still disabled PyTorch (torch {torch.__version__}). "
+            "Reinstall in this order in a NEW shell: "
+            f"(1) {sys.executable} -m pip uninstall -y transformers torch; "
+            f"(2) {sys.executable} -m pip install 'torch>=2.4.0'; "
+            f"(3) {sys.executable} -m pip install 'transformers>=5.0.0'. "
+            "On Jetson use NVIDIA's PyTorch index, or set parser.lfm_remote_url."
+        )
+    return torch
 
 
 def _require_transformers_v5() -> None:
@@ -358,23 +367,16 @@ class LFMG1Parser:
         if self.cfg.lfm_remote_url:
             return
 
+        torch = _require_local_torch()
+        _require_transformers_v5()
         try:
-            import torch
             from transformers import AutoModelForCausalLM, AutoTokenizer
         except Exception as exc:
-            hint = ""
-            if "get_int_max_str_digits" in str(exc) or "GenerationMixin" in str(exc):
-                hint = (
-                    " Likely torch/Python mismatch on Jetson. "
-                    "Use parser.lfm_remote_url or upgrade Python + Jetson torch."
-                )
             raise RuntimeError(
-                f"lfm_g1 import failed in {sys.executable}: {exc}.{hint} "
-                f"Install: {sys.executable} -m pip install 'torch>=2.4.0' 'transformers>=5.0.0'"
+                f"transformers model import failed after torch {torch.__version__}: {exc}. "
+                f"Run: python -m voice_control.lfm_g1 --diagnose"
             ) from exc
-        _require_local_torch()
-        _require_transformers_v5()
-        log.info("Loading LFM G1 model %s ...", self.cfg.lfm_model_id)
+        log.info("Loading LFM G1 model %s (torch %s) ...", self.cfg.lfm_model_id, torch.__version__)
         load_kw: Dict[str, Any] = {"trust_remote_code": True}
         self._tokenizer = AutoTokenizer.from_pretrained(self.cfg.lfm_model_id, **load_kw)
         kwargs: Dict[str, Any] = {"device_map": self.cfg.lfm_device, "trust_remote_code": True}
@@ -432,15 +434,48 @@ def serve(cfg: Optional[ParserConfig] = None, host: str = "0.0.0.0", port: int =
     HTTPServer((host, port), Handler).serve_forever()
 
 
+def diagnose_lfm_env() -> int:
+    """Print torch/transformers state for debugging Jetson installs."""
+    print(f"python: {sys.executable}")
+    print(f"version: {sys.version}")
+    for pkg in ("torch", "transformers", "tokenizers", "accelerate"):
+        try:
+            mod = __import__(pkg)
+            print(f"{pkg}: {getattr(mod, '__version__', '?')} @ {getattr(mod, '__file__', '?')}")
+        except Exception as exc:
+            print(f"{pkg}: FAILED ({exc})")
+    try:
+        import torch
+        t = torch.tensor([1.0])
+        print(f"torch tensor ok: {t.item()}")
+    except Exception as exc:
+        print(f"torch tensor FAILED: {exc}")
+        return 1
+    try:
+        from transformers.utils import is_torch_available
+        print(f"transformers is_torch_available: {is_torch_available()}")
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        print("AutoModelForCausalLM: ok")
+    except Exception as exc:
+        print(f"transformers model import FAILED: {exc}")
+        return 1
+    print("LFM local env looks OK.")
+    return 0
+
+
 def main() -> None:
     import argparse
     from .config import Config
 
-    p = argparse.ArgumentParser(description="Local LFM G1 parse server for lfm_remote_url clients")
+    p = argparse.ArgumentParser(description="LFM G1 server / diagnostics")
     p.add_argument("--config", type=str, default=None)
     p.add_argument("--host", type=str, default="0.0.0.0")
     p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--serve", action="store_true", help="Run HTTP parse server")
+    p.add_argument("--diagnose", action="store_true", help="Print torch/transformers diagnostics")
     args = p.parse_args()
+    if args.diagnose:
+        raise SystemExit(diagnose_lfm_env())
     cfg = Config.from_yaml(args.config).parser if args.config else ParserConfig()
     serve(cfg, host=args.host, port=args.port)
 
