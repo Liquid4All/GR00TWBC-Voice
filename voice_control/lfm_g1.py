@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import ast
+import json
 import logging
 import re
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 from .config import ParserConfig
 from .parsers import (
@@ -91,6 +96,59 @@ _STOP_REASON = {
     "sequence_complete": StopReason.UNKNOWN, "user_stop": StopReason.SAFETY,
     "segment_complete": StopReason.UNKNOWN,
 }
+
+
+def _parse_version(version: str) -> Tuple[int, ...]:
+    parts: List[int] = []
+    for token in version.split("+")[0].split("."):
+        try:
+            parts.append(int(token))
+        except ValueError:
+            break
+    return tuple(parts)
+
+
+def _require_local_torch() -> None:
+    try:
+        import torch
+        from transformers.utils import is_torch_available
+    except Exception as exc:
+        raise RuntimeError(
+            f"lfm_g1 needs torch>=2.4 in {sys.executable}: {exc}. "
+            f"Run: {sys.executable} -m pip install 'torch>=2.4.0' 'transformers>=5.0.0'"
+        ) from exc
+    if not is_torch_available():
+        raise RuntimeError(
+            f"transformers disabled PyTorch (installed torch {torch.__version__}, need >=2.4). "
+            f"Upgrade: {sys.executable} -m pip install -U 'torch>=2.4.0'. "
+            "On Jetson use NVIDIA's PyTorch wheel for your JetPack, or set parser.lfm_remote_url "
+            "and run `python -m voice_control.lfm_g1 --serve` on a laptop."
+        )
+    if _parse_version(torch.__version__) < (2, 4, 0):
+        raise RuntimeError(
+            f"torch {torch.__version__} is too old for transformers 5 (need >=2.4). "
+            f"Upgrade: {sys.executable} -m pip install -U 'torch>=2.4.0'"
+        )
+
+
+def _require_transformers_v5() -> None:
+    import transformers
+
+    if _parse_version(transformers.__version__) < (5, 0):
+        raise RuntimeError(
+            f"LFM models need transformers>=5.0 (you have {transformers.__version__}). "
+            f"Run: {sys.executable} -m pip install 'transformers>=5.0.0' 'tokenizers>=0.21.0'"
+        )
+
+
+def _parse_remote_response(payload: Any) -> str:
+    if isinstance(payload, str):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("raw", "output", "text", "content"):
+            if key in payload:
+                return str(payload[key])
+    raise RuntimeError(f"unexpected remote LFM response: {payload!r}")
 
 
 def _ast_calls(source: str) -> List[Tuple[str, Dict[str, Any]]]:
@@ -251,6 +309,11 @@ class LFMG1Parser:
         )
 
     def _generate(self, text: str) -> str:
+        if self.cfg.lfm_remote_url:
+            return self._generate_remote(text)
+        return self._generate_local(text)
+
+    def _generate_local(self, text: str) -> str:
         self._ensure_model()
         messages = [
             {"role": "system", "content": G1_SYSTEM_PROMPT},
@@ -271,10 +334,29 @@ class LFMG1Parser:
         log.debug("LFM raw output: %r", text_out)
         return text_out
 
+    def _generate_remote(self, text: str) -> str:
+        url = self.cfg.lfm_remote_url
+        if not url:
+            raise RuntimeError("lfm_remote_url is empty")
+        log.info("LFM remote parse via %s", url)
+        req = Request(
+            url,
+            data=json.dumps({"text": text}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=60) as resp:
+                payload = json.loads(resp.read().decode())
+        except URLError as exc:
+            raise RuntimeError(f"lfm remote failed ({url}): {exc}") from exc
+        return _parse_remote_response(payload)
+
     def _ensure_model(self) -> None:
         if self._model is not None:
             return
-        import sys
+        if self.cfg.lfm_remote_url:
+            return
 
         try:
             import torch
@@ -283,32 +365,17 @@ class LFMG1Parser:
             hint = ""
             if "get_int_max_str_digits" in str(exc) or "GenerationMixin" in str(exc):
                 hint = (
-                    " Likely torch/Python mismatch on Jetson: check "
-                    f"'python -c \"import sys; print(sys.version); "
-                    f"print(hasattr(sys, \\\"get_int_max_str_digits\\\"))\"'. "
-                    "Fix: upgrade Python to 3.11.9+ (or 3.12) and use Jetson-compatible torch; "
-                    "then pip install 'transformers>=5.0.0' (LFM requires v5 TokenizersBackend)."
+                    " Likely torch/Python mismatch on Jetson. "
+                    "Use parser.lfm_remote_url or upgrade Python + Jetson torch."
                 )
             raise RuntimeError(
                 f"lfm_g1 import failed in {sys.executable}: {exc}.{hint} "
-                "Install/reinstall with the same interpreter: "
-                f"{sys.executable} -m pip install torch transformers accelerate"
+                f"Install: {sys.executable} -m pip install 'torch>=2.4.0' 'transformers>=5.0.0'"
             ) from exc
+        _require_local_torch()
+        _require_transformers_v5()
         log.info("Loading LFM G1 model %s ...", self.cfg.lfm_model_id)
         load_kw: Dict[str, Any] = {"trust_remote_code": True}
-        try:
-            import transformers
-            ver = tuple(int(x) for x in transformers.__version__.split(".")[:2])
-            if ver < (5, 0):
-                raise RuntimeError(
-                    f"LFM models need transformers>=5.0 (you have {transformers.__version__}); "
-                    f"TokenizersBackend is unavailable in 4.x. "
-                    f"Run: {sys.executable} -m pip install 'transformers>=5.0.0' 'tokenizers>=0.21.0'"
-                )
-        except RuntimeError:
-            raise
-        except Exception:
-            pass
         self._tokenizer = AutoTokenizer.from_pretrained(self.cfg.lfm_model_id, **load_kw)
         kwargs: Dict[str, Any] = {"device_map": self.cfg.lfm_device, "trust_remote_code": True}
         if self.cfg.lfm_device != "cpu":
@@ -329,3 +396,54 @@ class LFMG1Parser:
 @register("lfm_g1")
 def _build_lfm_g1(cfg: ParserConfig) -> LFMG1Parser:
     return LFMG1Parser(cfg)
+
+
+def serve(cfg: Optional[ParserConfig] = None, host: str = "0.0.0.0", port: int = 8765) -> None:
+    """Run local LFM inference HTTP server (for robot parser.lfm_remote_url)."""
+    local_cfg = cfg or ParserConfig()
+    local_cfg.lfm_remote_url = None
+    parser = LFMG1Parser(local_cfg)
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: Any) -> None:
+            log.info("lfm_server " + fmt, *args)
+
+        def do_POST(self) -> None:
+            if self.path not in ("/", "/parse"):
+                self.send_error(404)
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                data = json.loads(self.rfile.read(length).decode() or "{}")
+                raw = parser._generate_local(data.get("text", ""))
+                body = json.dumps({"raw": raw}).encode()
+            except Exception as exc:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(exc)}).encode())
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+    log.info("LFM server on http://%s:%d/parse", host, port)
+    HTTPServer((host, port), Handler).serve_forever()
+
+
+def main() -> None:
+    import argparse
+    from .config import Config
+
+    p = argparse.ArgumentParser(description="Local LFM G1 parse server for lfm_remote_url clients")
+    p.add_argument("--config", type=str, default=None)
+    p.add_argument("--host", type=str, default="0.0.0.0")
+    p.add_argument("--port", type=int, default=8765)
+    args = p.parse_args()
+    cfg = Config.from_yaml(args.config).parser if args.config else ParserConfig()
+    serve(cfg, host=args.host, port=args.port)
+
+
+if __name__ == "__main__":
+    main()

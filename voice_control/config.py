@@ -53,6 +53,7 @@ class ParserConfig:
     lfm_default_velocity_mps: float = 0.5
     lfm_default_yaw_rate_dps: float = 45.0
     lfm_default_height_m: float = 0.5
+    lfm_remote_url: Optional[str] = None
 
 
 @dataclass

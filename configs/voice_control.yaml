@@ -37,6 +37,8 @@ parser:
   lfm_default_velocity_mps: 0.5
   lfm_default_yaw_rate_dps: 45.0
   lfm_default_height_m: 0.5
+  # Optional: run LFM on a laptop (torch>=2.4 + transformers>=5) and POST text here.
+  # lfm_remote_url: "http://192.168.123.100:8765/parse"
 
 safety:
   dry_run: true
