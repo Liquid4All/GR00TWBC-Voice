@@ -366,19 +366,22 @@ class LFMG1Parser:
             {"role": "system", "content": G1_SYSTEM_PROMPT},
             {"role": "user", "content": self._user_prompt(text)},
         ]
-        inputs = self._tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors="pt",
-        ).to(device)
+        model_inputs = self._tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, return_tensors="pt", tokenize=True,
+        )
+        model_inputs = model_inputs.to(device)
+        input_len = model_inputs["input_ids"].shape[-1]
+        gen_kw: Dict[str, Any] = {
+            "max_new_tokens": self.cfg.lfm_max_new_tokens,
+            "do_sample": self.cfg.lfm_temperature > 0,
+            "repetition_penalty": 1.05,
+        }
+        if self.cfg.lfm_temperature > 0:
+            gen_kw["temperature"] = max(self.cfg.lfm_temperature, 1e-5)
+            gen_kw["top_k"] = self.cfg.lfm_top_k
         with torch.no_grad():
-            out = self._model.generate(
-                inputs,
-                max_new_tokens=self.cfg.lfm_max_new_tokens,
-                do_sample=self.cfg.lfm_temperature > 0,
-                temperature=max(self.cfg.lfm_temperature, 1e-5),
-                top_k=self.cfg.lfm_top_k,
-                repetition_penalty=1.05,
-            )
-        text_out = self._tokenizer.decode(out[0][inputs.shape[-1]:], skip_special_tokens=False)
+            out = self._model.generate(**model_inputs, **gen_kw)
+        text_out = self._tokenizer.decode(out[0][input_len:], skip_special_tokens=False)
         log.info("LFM raw output: %r", text_out[:500])
         return text_out
 
