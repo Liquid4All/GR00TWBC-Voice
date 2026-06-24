@@ -14,7 +14,7 @@ audio:
 
 wake:
   mode: wake_word
-  phrase: "hey jarvis"
+  phrase: "hey sonic"
   oww_model: hey_jarvis
   oww_threshold: 0.5
   oww_patience: 2
@@ -31,8 +31,12 @@ parser:
   confidence_threshold: 0.75
   duration_min_s: 0.5
   duration_max_s: 120.0
-  # LFM G1 function-calling parser (set backend: lfm_g1)
-  lfm_model_id: "/GR00T-WBC/models/lfm_g1"
+  # LFM G1 function-calling parser (backend: lfm_g1 | lfm_g1_gguf)
+  lfm_model_id: "/GR00T-WBC/models/lfm3_g1"
+  lfm_gguf_path: "/GR00T-WBC/models/lfm_g1/lfm_g1.gguf"
+  # lfm_tokenizer_id: null  # defaults to lfm_model_id (HF dir for chat template only)
+  lfm_gguf_n_ctx: 4096
+  lfm_gguf_n_gpu_layers: 0
   lfm_device: cpu
   lfm_max_new_tokens: 512
   lfm_temperature: 0.1

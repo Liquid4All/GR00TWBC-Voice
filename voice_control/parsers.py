@@ -625,3 +625,4 @@ def _build_model(cfg: ParserConfig) -> CommandParser:
 
 
 from . import lfm_g1  # noqa: F401 — registers "lfm_g1" backend
+from . import lfm_g1_gguf  # noqa: F401 — registers "lfm_g1_gguf" backend

@@ -210,7 +210,7 @@ def rotate_call(angle_deg: float) -> dict[str, Any]:
     return call(
         "rotate_in_place",
         angle_deg=fmt_num(angle_deg),
-        yaw_rate_dps=90,
+        yaw_rate_dps=180,
         duration_s=fmt_num(abs(angle_deg) / 90),
     )
 

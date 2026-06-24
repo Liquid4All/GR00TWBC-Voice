@@ -58,6 +58,11 @@ class ParserConfig:
     lfm_default_yaw_rate_dps: float = 45.0
     lfm_default_height_m: float = 0.5
     lfm_remote_url: Optional[str] = None
+    # GGUF parser (backend: lfm_g1_gguf) — llama.cpp weights + HF tokenizer for chat template
+    lfm_gguf_path: str = "/GR00T-WBC/models/lfm_g1/lfm_g1.gguf"
+    lfm_tokenizer_id: Optional[str] = None
+    lfm_gguf_n_ctx: int = 4096
+    lfm_gguf_n_gpu_layers: int = 0
 
 
 @dataclass

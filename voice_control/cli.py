@@ -30,7 +30,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--backend", type=str, default=None,
                    choices=["whisper_cpp"], help="ASR backend override")
     p.add_argument("--parser", type=str, default=None,
-                   choices=["deterministic", "model", "lfm_g1"], help="Command parser backend override")
+                   choices=["deterministic", "model", "lfm_g1", "lfm_g1_gguf"], help="Command parser backend override")
     p.add_argument("--source", type=str, default=None,
                    choices=["device", "multicast"],
                    help="Capture source override (device sound card | G1 multicast mic)")
