@@ -81,6 +81,13 @@ def command_summary(command) -> str:
     return "None" if command is None else str(command.model_dump(mode="json"))
 
 
+def resolve_command_duration_s(command, *, default_s: float, min_s: float, max_s: float) -> float:
+    """Return clamped hold time for a planner command (``duration_s`` or fallback)."""
+    raw = getattr(command, "duration_s", None)
+    duration = float(default_s if raw is None else raw)
+    return max(min_s, min(max_s, duration))
+
+
 class VoicePipeline:
     def __init__(
         self, config: Config, *, parser: Optional[CommandParser] = None,
@@ -113,7 +120,7 @@ class VoicePipeline:
                 parsed.raw_text = text
                 handled = self._handle_segment(parsed, original=text, skip_duration_estimate=True)
                 results.append(handled)
-                self._execute_command(handled, last=(i == len(plan) - 1))
+                self._hold_command(handled)
             return results
         segments = split_segments(text) or [text]
         results: List[ParseResult] = []
@@ -122,7 +129,7 @@ class VoicePipeline:
                 log.info("PLAN step %d/%d: %r", i + 1, len(segments), segment)
             handled = self._handle_segment(self._parse_segment(segment), original=text)
             results.append(handled)
-            self._execute_command(handled, last=(i == len(segments) - 1))
+            self._hold_command(handled)
         return results
 
     def _parse_segment(self, text: str) -> ParseResult:
@@ -176,17 +183,32 @@ class VoicePipeline:
             normalized_text=result.normalized_text, command=final, reason="accepted",
         )
 
-    def _execute_command(self, result: ParseResult, last: bool) -> None:
-        if self.dry_run or last:
+    def _hold_command(self, result: ParseResult) -> None:
+        """Hold each parsed command on the planner wire for its ``duration_s`` at planner_dt."""
+        if self.dry_run:
             return
         command = result.command
         if command is None or isinstance(command, (ClarifyCommand, StopCommand)):
             return
-        dwell = getattr(command, "duration_s", None) or self.config.publisher.segment_dwell_s
-        deadline = time.monotonic() + float(dwell)
-        while time.monotonic() < deadline:
-            self.stream.tick()
-            time.sleep(self.config.publisher.planner_dt)
+        if not hasattr(command, "duration_s"):
+            return
+        duration = resolve_command_duration_s(
+            command,
+            default_s=self.config.publisher.segment_dwell_s,
+            min_s=self.config.parser.duration_min_s,
+            max_s=self.config.parser.duration_max_s,
+        )
+        bg = self._stream_thread is not None and self._stream_thread.is_alive()
+        log.info(
+            "Holding %s for %.2fs at %.0f Hz (background_stream=%s)",
+            getattr(command, "tool", type(command).__name__), duration, 1.0 / self.config.publisher.planner_dt, bg,
+        )
+        self.stream.hold_for(duration, background_stream=bg)
+        self.stream.interrupt()
+        log.info(
+            "Interrupted %s after %.2fs (ready for next planner command)",
+            getattr(command, "tool", type(command).__name__), duration,
+        )
 
     def start_stream(self) -> None:
         if self._stream_thread is not None:

@@ -69,7 +69,7 @@ class ParserConfig:
 class SafetyConfig:
     dry_run: bool = True
     execute: bool = False
-    command_timeout_s: float = 2.0
+    command_timeout_s: float = 30.0
 
 
 @dataclass

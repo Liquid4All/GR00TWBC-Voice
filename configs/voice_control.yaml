@@ -51,15 +51,15 @@ parser:
 safety:
   dry_run: true
   execute: false
-  command_timeout_s: 2.0
+  command_timeout_s: 30.0
 
 publisher:
   backend: "local_planner"
   local_planner_endpoint: "tcp://127.0.0.1:5556"
   zmq_endpoint: "tcp://127.0.0.1:5556"
   zmq_bind: true
-  planner_dt: 0.1
-  segment_dwell_s: 3.0
+  planner_dt: 0.1          # 10 Hz — matches deploy kinematic planner input rate
+  segment_dwell_s: 3.0     # fallback hold when a command has no duration_s
 
 logging:
   level: "INFO"

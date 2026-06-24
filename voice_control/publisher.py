@@ -180,6 +180,17 @@ def tool_call_to_planner_fields(command: PlannerToolCallType) -> PlannerFields:
 
 # Publisher abstraction + adapters
 
+def build_planner_idle_wire() -> bytes:
+    """ZMQ planner message: IDLE, zero movement — cuts an in-progress planner segment."""
+    return build_planner_message(
+        mode=int(LocomotionMode.IDLE),
+        movement=(0.0, 0.0, 0.0),
+        facing=_FORWARD,
+        speed=0.0,
+        height=_HEIGHT_DEFAULT,
+    )
+
+
 class PlannerCommandPublisher(abc.ABC):
 
     @abc.abstractmethod
@@ -188,6 +199,11 @@ class PlannerCommandPublisher(abc.ABC):
 
     @abc.abstractmethod
     def stop(self) -> None:
+        ...
+
+    @abc.abstractmethod
+    def interrupt(self) -> None:
+        """Send IDLE / zero velocity so deploy replans immediately (not command-topic e-stop)."""
         ...
 
     def close(self) -> None:  # default no-op
@@ -214,6 +230,17 @@ class StubPublisher(PlannerCommandPublisher):
 
     def stop(self) -> None:
         self.publish(StopCommand())
+
+    def interrupt(self) -> None:
+        state = movement_state_from_planner_fields({
+            "mode": int(LocomotionMode.IDLE),
+            "movement": [0.0, 0.0, 0.0],
+            "facing": list(_FORWARD),
+            "speed": 0.0,
+            "height": _HEIGHT_DEFAULT,
+        })
+        self.published.append({"interrupt": True, "movement_state": state})
+        log.info("[StubPublisher] interrupt -> movement_state=%s", state)
 
     def close(self) -> None:
         log.debug("[StubPublisher] closed (%d commands published)", len(self.published))
@@ -266,6 +293,12 @@ class ZmqPublisher(PlannerCommandPublisher):
             return
         self._socket.send(self._build_command_message(start=False, stop=True, planner=True))
         log.info("[ZmqPublisher] STOP sent on command topic")
+
+    def interrupt(self) -> None:
+        if self._socket is None:
+            return
+        self._socket.send(build_planner_idle_wire())
+        log.info("[ZmqPublisher] interrupt -> IDLE (zero movement)")
 
     def close(self) -> None:
         if self._socket is not None:
@@ -359,9 +392,31 @@ class PlannerStreamLoop:
         if (now - self._last_publish) >= self.planner_dt:
             self.publisher.publish(self._current)
             self._last_publish = now
+            self._last_update = now
             return StreamTick(published=self._current)
 
         return StreamTick()
+
+    def hold_for(self, duration_s: float, *, background_stream: bool = False) -> None:
+        """Republish the current command at ``planner_dt`` for ``duration_s`` seconds.
+
+        Matches the deploy kinematic planner input rate (~10 Hz). When a background
+        stream thread is already ticking, this only sleeps for the dwell period.
+        """
+        if duration_s <= 0 or self._current is None or isinstance(self._current, StopCommand):
+            return
+        deadline = time.monotonic() + float(duration_s)
+        while time.monotonic() < deadline:
+            if not background_stream:
+                self.tick()
+            time.sleep(self.planner_dt)
+
+    def interrupt(self) -> None:
+        """Clear the active hold and send IDLE so deploy cuts motion before the next tool call."""
+        self._current = None
+        self._timed_out = False
+        self._last_update = time.monotonic()
+        self.publisher.interrupt()
 
     def close(self) -> None:
         self.publisher.close()
