@@ -12,8 +12,10 @@ from .config import PublisherConfig
 from .parsers import (
     ClarifyCommand,
     GetUpCommand,
+    HoldPoseCommand,
     ParseResult,
     PlannerToolCallType,
+    RotateInPlaceCommand,
     SetBoxingActionCommand,
     SetCrawlCommand,
     SetNavigationCommand,
@@ -22,7 +24,7 @@ from .parsers import (
     tool_call_to_dict,
 )
 from . import skills
-from .skills import LocomotionMode, heading_to_direction
+from .skills import LocomotionMode, heading_to_direction, normalize_heading_deg
 
 log = logging.getLogger(__name__)
 
@@ -117,75 +119,115 @@ class PlannerFields:
         )
 
 
-def tool_call_to_planner_fields(command: PlannerToolCallType) -> PlannerFields:
+@dataclass
+class FacingTracker:
+    """Tracks body-relative facing across sequential planner commands."""
 
-    if isinstance(command, StopCommand):
+    heading_deg: float = 0.0
+
+    def reset(self) -> None:
+        self.heading_deg = 0.0
+
+    def facing_direction(self) -> Tuple[float, float, float]:
+        return heading_to_direction(self.heading_deg)
+
+    def to_planner_fields(self, command: PlannerToolCallType) -> PlannerFields:
+        if isinstance(command, StopCommand):
+            return PlannerFields(
+                mode=int(LocomotionMode.IDLE), movement=(0.0, 0.0, 0.0),
+                facing=self.facing_direction(), speed=_SPEED_DEFAULT,
+                height=_HEIGHT_DEFAULT, is_stop=True,
+            )
+
+        if isinstance(command, RotateInPlaceCommand):
+            self.heading_deg = normalize_heading_deg(self.heading_deg + command.angle_deg)
+            mode = skills.STYLE_TO_MODE.get(command.style, LocomotionMode.WALK)
+            return PlannerFields(
+                mode=int(mode), movement=(0.0, 0.0, 0.0),
+                facing=self.facing_direction(), speed=_SPEED_DEFAULT,
+            )
+
+        if isinstance(command, HoldPoseCommand):
+            mode = skills.STYLE_TO_MODE.get(command.style, LocomotionMode.WALK)
+            return PlannerFields(
+                mode=int(mode), movement=(0.0, 0.0, 0.0),
+                facing=self.facing_direction(), speed=_SPEED_DEFAULT,
+            )
+
+        if isinstance(command, SetNavigationCommand):
+            mode = skills.STYLE_TO_MODE.get(command.style, LocomotionMode.WALK)
+            if command.style == "drunken":
+                log.warning("Style 'drunken' has no dedicated planner mode; using WALK.")
+            self.heading_deg = normalize_heading_deg(command.heading_deg)
+            direction = heading_to_direction(self.heading_deg)
+            if command.velocity_mps <= 0.0:
+                # Absolute target facing (deterministic "turn left" / "turn around").
+                return PlannerFields(
+                    mode=int(mode), movement=(0.0, 0.0, 0.0), facing=direction,
+                    speed=_SPEED_DEFAULT,
+                )
+            return PlannerFields(
+                mode=int(mode), movement=direction, facing=direction,
+                speed=float(command.velocity_mps),
+            )
+
+        if isinstance(command, SetCrawlCommand):
+            mode = skills.CRAWL_STYLE_TO_MODE.get(command.crawl_style, LocomotionMode.ELBOW_CRAWLING)
+            if command.velocity_mps > 0.0:
+                self.heading_deg = normalize_heading_deg(command.heading_deg)
+            direction = heading_to_direction(self.heading_deg)
+            speed = float(command.velocity_mps) if command.velocity_mps > 0.0 else _SPEED_DEFAULT
+            movement = direction if command.velocity_mps > 0.0 else (0.0, 0.0, 0.0)
+            return PlannerFields(mode=int(mode), movement=movement, facing=direction, speed=speed)
+
+        if isinstance(command, SetPostureCommand):
+            mode = skills.POSTURE_TO_MODE.get(command.posture, LocomotionMode.IDLE)
+            height = command.pelvis_height_m if command.pelvis_height_m is not None else _HEIGHT_DEFAULT
+            return PlannerFields(
+                mode=int(mode), movement=(0.0, 0.0, 0.0), facing=self.facing_direction(),
+                speed=_SPEED_DEFAULT, height=float(height),
+            )
+
+        if isinstance(command, SetBoxingActionCommand):
+            mode = skills.BOXING_ACTION_TO_MODE.get(command.action, LocomotionMode.IDLE_BOXING)
+            if command.action in ("block",):
+                log.warning("Boxing action 'block' has no dedicated planner mode; using IDLE_BOXING.")
+            return PlannerFields(
+                mode=int(mode), movement=(0.0, 0.0, 0.0),
+                facing=self.facing_direction(), speed=_SPEED_DEFAULT,
+            )
+
+        if isinstance(command, GetUpCommand):
+            return PlannerFields(
+                mode=int(LocomotionMode.IDLE), movement=(0.0, 0.0, 0.0),
+                facing=self.facing_direction(), speed=_SPEED_DEFAULT, height=_HEIGHT_DEFAULT,
+            )
+
         return PlannerFields(
             mode=int(LocomotionMode.IDLE), movement=(0.0, 0.0, 0.0),
-            facing=_FORWARD, speed=_SPEED_DEFAULT, height=_HEIGHT_DEFAULT, is_stop=True,
+            facing=self.facing_direction(), speed=_SPEED_DEFAULT, height=_HEIGHT_DEFAULT,
         )
 
-    if isinstance(command, SetNavigationCommand):
-        mode = skills.STYLE_TO_MODE.get(command.style, LocomotionMode.WALK)
-        if command.style == "drunken":
-            log.warning("Style 'drunken' has no dedicated planner mode; using WALK.")
-        direction = heading_to_direction(command.heading_deg)
-        if command.velocity_mps <= 0.0:
-            # In-place turn: change facing only, no translation.
-            return PlannerFields(
-                mode=int(mode), movement=(0.0, 0.0, 0.0), facing=direction,
-                speed=_SPEED_DEFAULT,
-            )
-        return PlannerFields(
-            mode=int(mode), movement=direction, facing=direction,
-            speed=float(command.velocity_mps),
-        )
 
-    if isinstance(command, SetCrawlCommand):
-        mode = skills.CRAWL_STYLE_TO_MODE.get(command.crawl_style, LocomotionMode.ELBOW_CRAWLING)
-        direction = heading_to_direction(command.heading_deg)
-        speed = float(command.velocity_mps) if command.velocity_mps > 0.0 else _SPEED_DEFAULT
-        movement = direction if command.velocity_mps > 0.0 else (0.0, 0.0, 0.0)
-        return PlannerFields(mode=int(mode), movement=movement, facing=direction, speed=speed)
-
-    if isinstance(command, SetPostureCommand):
-        mode = skills.POSTURE_TO_MODE.get(command.posture, LocomotionMode.IDLE)
-        height = command.pelvis_height_m if command.pelvis_height_m is not None else _HEIGHT_DEFAULT
-        return PlannerFields(
-            mode=int(mode), movement=(0.0, 0.0, 0.0), facing=_FORWARD,
-            speed=_SPEED_DEFAULT, height=float(height),
-        )
-
-    if isinstance(command, SetBoxingActionCommand):
-        mode = skills.BOXING_ACTION_TO_MODE.get(command.action, LocomotionMode.IDLE_BOXING)
-        if command.action in ("block",):
-            log.warning("Boxing action 'block' has no dedicated planner mode; using IDLE_BOXING.")
-        return PlannerFields(
-            mode=int(mode), movement=(0.0, 0.0, 0.0), facing=_FORWARD, speed=_SPEED_DEFAULT,
-        )
-
-    if isinstance(command, GetUpCommand):
-        # Recover to a standing idle pose; the planner fills in the transition.
-        return PlannerFields(
-            mode=int(LocomotionMode.IDLE), movement=(0.0, 0.0, 0.0), facing=_FORWARD,
-            speed=_SPEED_DEFAULT, height=_HEIGHT_DEFAULT,
-        )
-
-    # clarify and anything else: no motion.
-    return PlannerFields(
-        mode=int(LocomotionMode.IDLE), movement=(0.0, 0.0, 0.0), facing=_FORWARD,
-        speed=_SPEED_DEFAULT, height=_HEIGHT_DEFAULT,
-    )
+def tool_call_to_planner_fields(
+    command: PlannerToolCallType,
+    tracker: Optional[FacingTracker] = None,
+) -> PlannerFields:
+    if tracker is None:
+        tracker = FacingTracker()
+    return tracker.to_planner_fields(command)
 
 
 # Publisher abstraction + adapters
 
-def build_planner_idle_wire() -> bytes:
+def build_planner_idle_wire(
+    facing: Sequence[float] = _FORWARD,
+) -> bytes:
     """ZMQ planner message: IDLE, zero movement — cuts an in-progress planner segment."""
     return build_planner_message(
         mode=int(LocomotionMode.IDLE),
         movement=(0.0, 0.0, 0.0),
-        facing=_FORWARD,
+        facing=facing,
         speed=0.0,
         height=_HEIGHT_DEFAULT,
     )
@@ -193,8 +235,17 @@ def build_planner_idle_wire() -> bytes:
 
 class PlannerCommandPublisher(abc.ABC):
 
+    facing: FacingTracker
+
+    def __init__(self) -> None:
+        self.facing = FacingTracker()
+
     @abc.abstractmethod
     def publish(self, command: PlannerToolCallType) -> None:
+        ...
+
+    @abc.abstractmethod
+    def publish_fields(self, fields: PlannerFields) -> None:
         ...
 
     @abc.abstractmethod
@@ -213,10 +264,11 @@ class PlannerCommandPublisher(abc.ABC):
 class StubPublisher(PlannerCommandPublisher):
 
     def __init__(self) -> None:
+        super().__init__()
         self.published: List[dict] = []
 
     def publish(self, command: PlannerToolCallType) -> None:
-        fields = tool_call_to_planner_fields(command)
+        fields = self.facing.to_planner_fields(command)
         record = {
             "tool_call": tool_call_to_dict(command),
             "planner_fields": fields.as_dict(),
@@ -228,6 +280,17 @@ class StubPublisher(PlannerCommandPublisher):
             record["tool_call"], record["movement_state"],
         )
 
+    def publish_fields(self, fields: PlannerFields) -> None:
+        if fields.is_stop:
+            self.stop()
+            return
+        record = {
+            "planner_fields": fields.as_dict(),
+            "movement_state": fields.to_movement_state(),
+        }
+        self.published.append(record)
+        log.info("[StubPublisher] hold -> movement_state=%s", record["movement_state"])
+
     def stop(self) -> None:
         self.publish(StopCommand())
 
@@ -235,7 +298,7 @@ class StubPublisher(PlannerCommandPublisher):
         state = movement_state_from_planner_fields({
             "mode": int(LocomotionMode.IDLE),
             "movement": [0.0, 0.0, 0.0],
-            "facing": list(_FORWARD),
+            "facing": list(self.facing.facing_direction()),
             "speed": 0.0,
             "height": _HEIGHT_DEFAULT,
         })
@@ -249,6 +312,7 @@ class StubPublisher(PlannerCommandPublisher):
 class ZmqPublisher(PlannerCommandPublisher):
 
     def __init__(self, endpoint: str, bind: bool = True) -> None:
+        super().__init__()
         self.endpoint = endpoint
         self._bind = bind
         self._socket = None
@@ -280,9 +344,13 @@ class ZmqPublisher(PlannerCommandPublisher):
         log.info("[ZmqPublisher] PUB on %s (planner mode enabled)", self.endpoint)
 
     def publish(self, command: PlannerToolCallType) -> None:
-        fields = tool_call_to_planner_fields(command)
+        self.publish_fields(self.facing.to_planner_fields(command))
+
+    def publish_fields(self, fields: PlannerFields) -> None:
         if fields.is_stop:
             self.stop()
+            return
+        if self._socket is None:
             return
         msg = fields.to_planner_wire()
         self._socket.send(msg)
@@ -297,7 +365,7 @@ class ZmqPublisher(PlannerCommandPublisher):
     def interrupt(self) -> None:
         if self._socket is None:
             return
-        self._socket.send(build_planner_idle_wire())
+        self._socket.send(build_planner_idle_wire(self.facing.facing_direction()))
         log.info("[ZmqPublisher] interrupt -> IDLE (zero movement)")
 
     def close(self) -> None:
@@ -350,17 +418,23 @@ class PlannerStreamLoop:
     command_timeout_s: float = 2.0
     planner_dt: float = 0.1
     _current: Optional[PlannerToolCallType] = field(default=None, init=False)
+    _current_fields: Optional[PlannerFields] = field(default=None, init=False)
     _last_update: float = field(default=0.0, init=False)
     _last_publish: float = field(default=0.0, init=False)
     _timed_out: bool = field(default=False, init=False)
 
+    @property
+    def facing(self) -> FacingTracker:
+        return self.publisher.facing
+
     def set_command(self, command: PlannerToolCallType, now: Optional[float] = None) -> None:
         now = time.monotonic() if now is None else now
         self._current = command
+        self._current_fields = self.publisher.facing.to_planner_fields(command)
         self._last_update = now
         self._timed_out = False
         # Immediate replan on change.
-        self.publisher.publish(command)
+        self.publisher.publish_fields(self._current_fields)
         self._last_publish = now
 
     def tick(self, now: Optional[float] = None) -> StreamTick:
@@ -390,7 +464,8 @@ class PlannerStreamLoop:
 
         # Velocity-conditioned hold: re-publish the same command at planner_dt.
         if (now - self._last_publish) >= self.planner_dt:
-            self.publisher.publish(self._current)
+            if self._current_fields is not None:
+                self.publisher.publish_fields(self._current_fields)
             self._last_publish = now
             self._last_update = now
             return StreamTick(published=self._current)
@@ -414,6 +489,7 @@ class PlannerStreamLoop:
     def interrupt(self) -> None:
         """Clear the active hold and send IDLE so deploy cuts motion before the next tool call."""
         self._current = None
+        self._current_fields = None
         self._timed_out = False
         self._last_update = time.monotonic()
         self.publisher.interrupt()

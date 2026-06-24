@@ -19,9 +19,11 @@ from .parsers import (
     CONF_STRONG,
     ClarifyCommand,
     CrawlStyle,
+    HoldPoseCommand,
     NavStyle,
     ParseResult,
     Posture,
+    RotateInPlaceCommand,
     SetBoxingActionCommand,
     SetCrawlCommand,
     SetNavigationCommand,
@@ -43,16 +45,15 @@ _TOOL_CALL_RE = re.compile(
 
 # Matches gear_sonic_deploy/sonic_tool_calling_eval.py SYSTEM_PROMPT (SFT training format).
 SYSTEM_PROMPT = """List of tools:
-
-[{"type":"function","function":{"name":"select_motion_mode","description":"Select a planner motion set and mode matching the robot keyboard controller.","parameters":{"type":"object","properties":{"motion_set":{"type":"string","enum":["locomotion","squat_ground","boxing","styled_walking"]},"mode":{"type":"string","enum":["slow_walk","walk","run","happy","stealth","injured","squat","kneel_two_legs","kneel_one_leg","hand_crawl","elbow_crawl","idle_boxing","walk_boxing","left_jab","right_jab","random_punches","left_hook","right_hook","careful","object_carrying","crouch","happy_dance","zombie","point","scared"]}},"required":["motion_set","mode"]}}},{"type":"function","function":{"name":"planner_move","description":"Execute body-relative planner movement at a heading and speed for a fixed duration.","parameters":{"type":"object","properties":{"velocity_mps":{"type":"number"},"heading_deg":{"type":"number"},"yaw_rate_dps":{"type":"number"},"duration_s":{"type":"number"}},"required":["velocity_mps","heading_deg","yaw_rate_dps","duration_s"]}}},{"type":"function","function":{"name":"rotate_in_place","description":"Turn the robot in place by a relative angle.","parameters":{"type":"object","properties":{"angle_deg":{"type":"number"},"yaw_rate_dps":{"type":"number"},"duration_s":{"type":"number"}},"required":["angle_deg","yaw_rate_dps","duration_s"]}}},{"type":"function","function":{"name":"set_body_height","description":"Set body height for squat and ground modes.","parameters":{"type":"object","properties":{"height_m":{"type":"number","minimum":0.2,"maximum":0.8},"duration_s":{"type":"number"}},"required":["height_m","duration_s"]}}},{"type":"function","function":{"name":"hold_pose","description":"Hold the current posture or planner state.","parameters":{"type":"object","properties":{"duration_s":{"type":"number"}},"required":["duration_s"]}}},{"type":"function","function":{"name":"stop","description":"Stop all motion.","parameters":{"type":"object","properties":{"reason":{"type":"string","enum":["user_request","safety","sequence_complete"]}},"required":["reason"]}}}]
-
+[{"type":"function","function":{"name":"select_motion_mode","description":"Select a planner motion set and mode matching the robot keyboard controller.","parameters":{"type":"object","properties":{"motion_set":{"type":"string","enum":["locomotion","squat_ground","styled_walking"]},"mode":{"type":"string","enum":["slow_walk","walk","run","happy","stealth","squat","kneel_two_legs","kneel_one_leg","hand_crawl","elbow_crawl","careful","object_carrying","crouch","happy_dance","point"]}},"required":["motion_set","mode"]}}},{"type":"function","function":{"name":"planner_move","description":"Execute body-relative planner movement or in-place yaw for a fixed duration.","parameters":{"type":"object","properties":{"velocity_mps":{"type":"number"},"heading_deg":{"type":"number"},"yaw_rate_dps":{"type":"number"},"duration_s":{"type":"number"}},"required":["velocity_mps","heading_deg","yaw_rate_dps","duration_s"]}}},{"type":"function","function":{"name":"set_body_height","description":"Set body height for squat and ground modes.","parameters":{"type":"object","properties":{"height_m":{"type":"number","minimum":0.2,"maximum":0.8},"duration_s":{"type":"number"}},"required":["height_m","duration_s"]}}},{"type":"function","function":{"name":"hold_pose","description":"Hold the current posture or planner state.","parameters":{"type":"object","properties":{"duration_s":{"type":"number"}},"required":["duration_s"]}}},{"type":"function","function":{"name":"stop","description":"Stop all motion.","parameters":{"type":"object","properties":{"reason":{"type":"string","enum":["user_request","safety","sequence_complete"]}},"required":["reason"]}}}]
 Instructions:
-You convert voice commands into ordered humanoid robot planner tool calls.
+You convert language commands into ordered humanoid robot planner tool calls.
 Emit only <|tool_call_start|>[...]<|tool_call_end|>.
 Use body-relative coordinates: +vx forward, -vx backward, +vy left, -vy right.
 Positive yaw/angle turns left; negative yaw/angle turns right.
 Split multi-stage commands into sequential calls.
 Use velocity and duration rather than distance in planner_move calls.
+Use planner_move with velocity_mps=0 and nonzero yaw_rate_dps for in-place turns.
 Use heading_deg for body-relative translation direction: 0 forward, 90 left, 180 backward, 270 right.
 Do not emit prose, explanations, markdown, or tool observations."""
 
@@ -230,8 +231,8 @@ class G1ToolMapper:
                 duration_s=float(args.get("duration_s") or 0.2),
             )
         if name == "hold_pose":
-            return SetNavigationCommand(
-                velocity_mps=0.0, heading_deg=0.0, style=self._nav_style(),
+            return HoldPoseCommand(
+                style=self._nav_style(),
                 duration_s=float(args["duration_s"]),
             )
         if name == "set_body_height":
@@ -240,8 +241,10 @@ class G1ToolMapper:
                 duration_s=float(args["duration_s"]),
             )
         if name == "rotate_in_place":
-            return SetNavigationCommand(
-                velocity_mps=0.0, heading_deg=float(args["angle_deg"]), style=self._nav_style(),
+            return RotateInPlaceCommand(
+                angle_deg=float(args["angle_deg"]),
+                yaw_rate_dps=float(args.get("yaw_rate_dps", 90.0)),
+                style=self._nav_style(),
                 duration_s=float(args["duration_s"]),
             )
         if name == "planner_move":

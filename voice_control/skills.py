@@ -111,8 +111,12 @@ BOXING_ACTION_TO_MODE: Dict[str, LocomotionMode] = {
 
 
 def heading_to_direction(heading_deg: float) -> Tuple[float, float, float]:
+    """Body-relative unit vector matching deploy gamepad/keyboard (cos θ, sin θ, 0).
+
+    Heading convention (LFM / training): 0° forward, +90° left, −90° / 270° right.
+    """
     rad = math.radians(heading_deg)
-    x, y = math.cos(rad), -math.sin(rad)
+    x, y = math.cos(rad), math.sin(rad)
     return (0.0 if abs(x) < 1e-9 else x, 0.0 if abs(y) < 1e-9 else y, 0.0)
 
 

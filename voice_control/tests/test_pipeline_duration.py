@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from voice_control.config import Config, ParserConfig
-from voice_control.parsers import SetNavigationCommand, StopCommand
+from voice_control.parsers import RotateInPlaceCommand, SetNavigationCommand, StopCommand
 from voice_control.pipeline import VoicePipeline, resolve_command_duration_s
 from voice_control.publisher import PlannerStreamLoop, StubPublisher
 
@@ -63,7 +63,7 @@ def test_hold_command_runs_each_plan_step(monkeypatch):
     )
 
     step1 = SetNavigationCommand(velocity_mps=1.0, heading_deg=0.0, duration_s=1.0)
-    step2 = SetNavigationCommand(velocity_mps=0.0, heading_deg=90.0, duration_s=0.5)
+    step2 = RotateInPlaceCommand(angle_deg=90.0, yaw_rate_dps=90.0, duration_s=0.5)
     from voice_control.parsers import ParseResult, CONF_STRONG
 
     pipeline._hold_command(ParseResult(

@@ -6,7 +6,7 @@ import pytest
 
 from voice_control.config import ParserConfig
 from voice_control.lfm_g1 import G1ToolMapper, extract_g1_tool_calls, resolve_lfm_model_path
-from voice_control.parsers import NavStyle, SetNavigationCommand, StopCommand, StopReason
+from voice_control.parsers import HoldPoseCommand, NavStyle, RotateInPlaceCommand, SetNavigationCommand, StopCommand, StopReason
 
 
 def _sample_block(*calls: str) -> str:
@@ -53,6 +53,21 @@ def test_mapper_stop():
     cmd = G1ToolMapper(ParserConfig()).map("stop", {"reason": "user_request"})
     assert isinstance(cmd, StopCommand)
     assert cmd.reason == StopReason.USER_REQUEST
+
+
+def test_mapper_rotate_in_place():
+    cmd = G1ToolMapper(ParserConfig()).map(
+        "rotate_in_place",
+        {"angle_deg": -90.0, "yaw_rate_dps": 90.0, "duration_s": 1.0},
+    )
+    assert isinstance(cmd, RotateInPlaceCommand)
+    assert cmd.angle_deg == -90.0
+
+
+def test_mapper_hold_pose():
+    cmd = G1ToolMapper(ParserConfig()).map("hold_pose", {"duration_s": 2.0})
+    assert isinstance(cmd, HoldPoseCommand)
+    assert cmd.duration_s == 2.0
 
 
 def test_mapper_select_motion_mode_returns_none():

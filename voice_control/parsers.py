@@ -30,6 +30,22 @@ class SetNavigationCommand(_ToolBase):
     duration_s: Optional[float] = Field(default=None, ge=0.0)
 
 
+class RotateInPlaceCommand(_ToolBase):
+    """Relative in-place turn (+angle = left, −angle = right)."""
+
+    tool: Literal["rotate_in_place"] = "rotate_in_place"
+    angle_deg: float
+    yaw_rate_dps: float = 90.0
+    style: NavStyle = NavStyle.WALKING
+    duration_s: Optional[float] = Field(default=None, ge=0.0)
+
+
+class HoldPoseCommand(_ToolBase):
+    tool: Literal["hold_pose"] = "hold_pose"
+    style: NavStyle = NavStyle.WALKING
+    duration_s: Optional[float] = Field(default=None, ge=0.0)
+
+
 class SetCrawlCommand(_ToolBase):
     tool: Literal["set_crawl"] = "set_crawl"
     velocity_mps: float = Field(ge=0.0)
@@ -62,8 +78,9 @@ class ClarifyCommand(_ToolBase):
 
 
 PlannerToolCallType = Union[
-    StopCommand, SetNavigationCommand, SetCrawlCommand, SetPostureCommand,
-    SetBoxingActionCommand, GetUpCommand, ClarifyCommand,
+    StopCommand, SetNavigationCommand, RotateInPlaceCommand, HoldPoseCommand,
+    SetCrawlCommand, SetPostureCommand, SetBoxingActionCommand, GetUpCommand,
+    ClarifyCommand,
 ]
 PlannerToolCall = Annotated[PlannerToolCallType, Field(discriminator="tool")]
 _TOOL_ADAPTER: TypeAdapter = TypeAdapter(PlannerToolCall)

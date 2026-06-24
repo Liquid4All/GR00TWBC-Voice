@@ -13,7 +13,7 @@ audio:
   mcast_iface_ip: null
 
 wake:
-  mode: wake_word
+  mode: push_to_talk
   phrase: "hey sonic"
   oww_model: hey_jarvis
   oww_threshold: 0.5
@@ -49,8 +49,8 @@ parser:
   # lfm_remote_url: "http://192.168.123.100:8765/parse"
 
 safety:
-  dry_run: true
-  execute: false
+  dry_run: false
+  execute: true
   command_timeout_s: 30.0
 
 publisher:

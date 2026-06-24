@@ -66,6 +66,12 @@ class HeuristicDurationEstimator:
                 est = distance / velocity + 1.0
             else:
                 est = 3.0
+        elif tool == "rotate_in_place":
+            angle = abs(float(getattr(command, "angle_deg", 0.0) or 0.0))
+            rate = abs(float(getattr(command, "yaw_rate_dps", 90.0) or 90.0))
+            est = max(0.5, angle / max(rate, 1.0))
+        elif tool == "hold_pose":
+            est = float(getattr(command, "duration_s", None) or 3.0)
         elif tool == "set_posture":
             est = 3.0  # this 3 is random, fix it later
         elif tool == "set_boxing_action":
@@ -166,7 +172,7 @@ class VoicePipeline:
         final = command
         if isinstance(final, SetBoxingActionCommand):
             self.boxing_active = True
-        elif final.tool in ("set_navigation", "set_crawl"):
+        elif final.tool in ("set_navigation", "set_crawl", "rotate_in_place", "hold_pose"):
             self.boxing_active = False
         if (
             not skip_duration_estimate
@@ -240,6 +246,7 @@ def run_text_once(pipeline: VoicePipeline, text: str) -> List[ParseResult]:
               f"-> {pipeline.config.publisher.local_planner_endpoint}")
     if len(results) > 1:
         print(f"plan steps     : {len(results)} (executed in order)")
+    tracker = pipeline.stream.facing
     for i, result in enumerate(results):
         cmd = result.command
         prefix = f"step {i + 1} " if len(results) > 1 else ""
@@ -247,7 +254,7 @@ def run_text_once(pipeline: VoicePipeline, text: str) -> List[ParseResult]:
         if cmd is not None:
             print(f"{prefix}tool_call  : {cmd.model_dump_json()}")
             if not isinstance(cmd, ClarifyCommand):
-                print(f"{prefix}planner    : {tool_call_to_planner_fields(cmd).to_movement_state()}")
+                print(f"{prefix}planner    : {tool_call_to_planner_fields(cmd, tracker).to_movement_state()}")
                 print(f"{prefix}wire       : "
                       f"{'(dry-run; not sent to ZMQ)' if pipeline.dry_run else 'sent on ZMQ planner topic'}")
     print("============================\n")
