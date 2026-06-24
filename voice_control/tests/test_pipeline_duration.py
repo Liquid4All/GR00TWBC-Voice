@@ -58,8 +58,8 @@ def test_hold_command_runs_each_plan_step(monkeypatch):
         lambda duration, *, background_stream=False: holds.append(duration),
     )
     monkeypatch.setattr(
-        pipeline.stream, "interrupt",
-        lambda: interrupts.append("interrupt"),
+        pipeline.stream, "return_to_standing",
+        lambda: interrupts.append("standing"),
     )
 
     step1 = SetNavigationCommand(velocity_mps=1.0, heading_deg=0.0, duration_s=1.0)
@@ -76,7 +76,38 @@ def test_hold_command_runs_each_plan_step(monkeypatch):
     ))
 
     assert holds == [1.0, 0.5]
-    assert interrupts == ["interrupt", "interrupt"]
+    assert interrupts == ["standing", "standing"]
+
+
+def test_return_to_standing_clears_command_and_holds_idle():
+    pub = StubPublisher()
+    loop = PlannerStreamLoop(publisher=pub, planner_dt=0.1)
+    loop.set_command(SetNavigationCommand(velocity_mps=1.0, heading_deg=0.0, duration_s=1.0))
+    loop.return_to_standing()
+    assert loop._current is None
+    assert loop._holding_standing is True
+    state = pub.published[-1]["movement_state"]
+    assert state["locomotion_mode"] == 0
+    assert state["movement_speed"] == -1.0
+    assert state["movement_direction"] == [0.0, 0.0, 0.0]
+
+
+def test_standing_hold_republishes_at_planner_dt(monkeypatch):
+    clock = {"t": 0.0}
+
+    def advance() -> float:
+        return clock["t"]
+
+    monkeypatch.setattr("voice_control.publisher.time.monotonic", advance)
+
+    pub = StubPublisher()
+    loop = PlannerStreamLoop(publisher=pub, planner_dt=0.1)
+    loop.return_to_standing()
+    n_after_return = len(pub.published)
+    clock["t"] += 0.1
+    loop.tick()
+    assert len(pub.published) == n_after_return + 1
+    assert pub.published[-1]["movement_state"]["locomotion_mode"] == 0
 
 
 def test_interrupt_clears_current_command():
@@ -85,7 +116,7 @@ def test_interrupt_clears_current_command():
     loop.set_command(SetNavigationCommand(velocity_mps=1.0, heading_deg=0.0, duration_s=1.0))
     loop.interrupt()
     assert loop._current is None
-    assert any(entry.get("interrupt") for entry in pub.published)
+    assert loop._holding_standing is True
 
 
 def test_hold_command_skips_stop():

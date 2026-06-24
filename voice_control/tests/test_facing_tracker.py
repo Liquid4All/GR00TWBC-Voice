@@ -65,6 +65,7 @@ def test_facing_tracker_interrupt_preserves_heading():
     idle = pub.published[-1]["movement_state"]
     assert idle["facing_direction"] == pytest.approx([0.0, 1.0, 0.0])
     assert idle["movement_direction"] == pytest.approx([0.0, 0.0, 0.0])
+    assert idle["movement_speed"] == pytest.approx(-1.0)
 
 
 def test_facing_tracker_absolute_turn_for_deterministic_parser():

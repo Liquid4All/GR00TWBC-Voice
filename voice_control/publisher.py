@@ -220,17 +220,26 @@ def tool_call_to_planner_fields(
 
 # Publisher abstraction + adapters
 
+def build_planner_standing_fields(
+    facing: Sequence[float] = _FORWARD,
+) -> PlannerFields:
+    """Stable upright IDLE — matches deploy ZMQManager planner-timeout idle state."""
+    if len(facing) != 3:
+        facing = _FORWARD
+    return PlannerFields(
+        mode=int(LocomotionMode.IDLE),
+        movement=(0.0, 0.0, 0.0),
+        facing=(float(facing[0]), float(facing[1]), float(facing[2])),
+        speed=_SPEED_DEFAULT,
+        height=_HEIGHT_DEFAULT,
+    )
+
+
 def build_planner_idle_wire(
     facing: Sequence[float] = _FORWARD,
 ) -> bytes:
-    """ZMQ planner message: IDLE, zero movement — cuts an in-progress planner segment."""
-    return build_planner_message(
-        mode=int(LocomotionMode.IDLE),
-        movement=(0.0, 0.0, 0.0),
-        facing=facing,
-        speed=0.0,
-        height=_HEIGHT_DEFAULT,
-    )
+    """ZMQ planner message: IDLE standing — cuts an in-progress planner segment."""
+    return build_planner_standing_fields(facing).to_planner_wire()
 
 
 class PlannerCommandPublisher(abc.ABC):
@@ -254,10 +263,14 @@ class PlannerCommandPublisher(abc.ABC):
 
     @abc.abstractmethod
     def interrupt(self) -> None:
-        """Send IDLE / zero velocity so deploy replans immediately (not command-topic e-stop)."""
+        """Cut active motion and return to stable IDLE standing (not command-topic e-stop)."""
         ...
 
-    def close(self) -> None:  # default no-op
+    def return_to_standing(self) -> None:
+        """Default: same as interrupt — hold stable upright IDLE."""
+        self.interrupt()
+
+    def close(self, *, stop_control: bool | None = None) -> None:  # default no-op
         return None
 
 
@@ -295,26 +308,21 @@ class StubPublisher(PlannerCommandPublisher):
         self.publish(StopCommand())
 
     def interrupt(self) -> None:
-        state = movement_state_from_planner_fields({
-            "mode": int(LocomotionMode.IDLE),
-            "movement": [0.0, 0.0, 0.0],
-            "facing": list(self.facing.facing_direction()),
-            "speed": 0.0,
-            "height": _HEIGHT_DEFAULT,
-        })
+        state = build_planner_standing_fields(self.facing.facing_direction()).to_movement_state()
         self.published.append({"interrupt": True, "movement_state": state})
-        log.info("[StubPublisher] interrupt -> movement_state=%s", state)
+        log.info("[StubPublisher] return_to_standing -> movement_state=%s", state)
 
-    def close(self) -> None:
+    def close(self, *, stop_control: bool | None = None) -> None:
         log.debug("[StubPublisher] closed (%d commands published)", len(self.published))
 
 
 class ZmqPublisher(PlannerCommandPublisher):
 
-    def __init__(self, endpoint: str, bind: bool = True) -> None:
+    def __init__(self, endpoint: str, bind: bool = True, *, stop_on_close: bool = False) -> None:
         super().__init__()
         self.endpoint = endpoint
         self._bind = bind
+        self._stop_on_close = stop_on_close
         self._socket = None
         self._context = None
         self._started = False
@@ -365,13 +373,17 @@ class ZmqPublisher(PlannerCommandPublisher):
     def interrupt(self) -> None:
         if self._socket is None:
             return
-        self._socket.send(build_planner_idle_wire(self.facing.facing_direction()))
-        log.info("[ZmqPublisher] interrupt -> IDLE (zero movement)")
+        standing = build_planner_standing_fields(self.facing.facing_direction())
+        self._socket.send(standing.to_planner_wire())
+        log.info("[ZmqPublisher] return_to_standing -> %s", standing.to_movement_state())
 
-    def close(self) -> None:
+    def close(self, *, stop_control: bool | None = None) -> None:
         if self._socket is not None:
             try:
-                self.stop()
+                if stop_control if stop_control is not None else self._stop_on_close:
+                    self.stop()
+                else:
+                    self.interrupt()
             finally:
                 self._socket.close(linger=200)
                 self._socket = None
@@ -380,8 +392,10 @@ class ZmqPublisher(PlannerCommandPublisher):
 
 class LocalPlannerPublisher(ZmqPublisher):
 
-    def __init__(self, endpoint: str = "tcp://127.0.0.1:5556") -> None:
-        super().__init__(endpoint=endpoint, bind=True)
+    def __init__(
+        self, endpoint: str = "tcp://127.0.0.1:5556", *, stop_on_close: bool = False,
+    ) -> None:
+        super().__init__(endpoint=endpoint, bind=True, stop_on_close=stop_on_close)
 
 
 class ExistingRepoPublisher(LocalPlannerPublisher):
@@ -394,11 +408,13 @@ def build_publisher(cfg: PublisherConfig) -> PlannerCommandPublisher:
     if backend == "stub":
         return StubPublisher()
     if backend in ("local_planner", "local", "onboard"):
-        return LocalPlannerPublisher(cfg.local_planner_endpoint)
+        return LocalPlannerPublisher(
+            cfg.local_planner_endpoint, stop_on_close=cfg.stop_on_close,
+        )
     if backend == "zmq":
-        return ZmqPublisher(cfg.zmq_endpoint, bind=cfg.zmq_bind)
+        return ZmqPublisher(cfg.zmq_endpoint, bind=cfg.zmq_bind, stop_on_close=cfg.stop_on_close)
     if backend in ("existing_repo", "existing"):
-        return ExistingRepoPublisher(cfg.local_planner_endpoint)
+        return ExistingRepoPublisher(cfg.local_planner_endpoint, stop_on_close=cfg.stop_on_close)
     raise ValueError(f"Unknown publisher backend: {cfg.backend!r}")
 
 
@@ -419,6 +435,8 @@ class PlannerStreamLoop:
     planner_dt: float = 0.1
     _current: Optional[PlannerToolCallType] = field(default=None, init=False)
     _current_fields: Optional[PlannerFields] = field(default=None, init=False)
+    _holding_standing: bool = field(default=False, init=False)
+    _standing_fields: Optional[PlannerFields] = field(default=None, init=False)
     _last_update: float = field(default=0.0, init=False)
     _last_publish: float = field(default=0.0, init=False)
     _timed_out: bool = field(default=False, init=False)
@@ -429,6 +447,8 @@ class PlannerStreamLoop:
 
     def set_command(self, command: PlannerToolCallType, now: Optional[float] = None) -> None:
         now = time.monotonic() if now is None else now
+        self._holding_standing = False
+        self._standing_fields = None
         self._current = command
         self._current_fields = self.publisher.facing.to_planner_fields(command)
         self._last_update = now
@@ -440,6 +460,11 @@ class PlannerStreamLoop:
     def tick(self, now: Optional[float] = None) -> StreamTick:
         now = time.monotonic() if now is None else now
         if self._current is None:
+            if self._holding_standing and self._standing_fields is not None:
+                if (now - self._last_publish) >= self.planner_dt:
+                    self.publisher.publish_fields(self._standing_fields)
+                    self._last_publish = now
+                    self._last_update = now
             return StreamTick()
 
         # Stop commands latch; nothing to hold.
@@ -486,13 +511,21 @@ class PlannerStreamLoop:
                 self.tick()
             time.sleep(self.planner_dt)
 
-    def interrupt(self) -> None:
-        """Clear the active hold and send IDLE so deploy cuts motion before the next tool call."""
+    def return_to_standing(self) -> None:
+        """Clear the active command and hold stable IDLE standing at planner_dt."""
         self._current = None
         self._current_fields = None
         self._timed_out = False
-        self._last_update = time.monotonic()
-        self.publisher.interrupt()
+        self._holding_standing = True
+        self._standing_fields = build_planner_standing_fields(self.publisher.facing.facing_direction())
+        now = time.monotonic()
+        self._last_update = now
+        self.publisher.publish_fields(self._standing_fields)
+        self._last_publish = now
 
-    def close(self) -> None:
-        self.publisher.close()
+    def interrupt(self) -> None:
+        """Alias for return_to_standing (kept for callers that still say interrupt)."""
+        self.return_to_standing()
+
+    def close(self, *, stop_control: bool | None = None) -> None:
+        self.publisher.close(stop_control=stop_control)

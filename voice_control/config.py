@@ -80,6 +80,8 @@ class PublisherConfig:
     zmq_bind: bool = True
     planner_dt: float = 0.1
     segment_dwell_s: float = 3.0
+    # When false (default), closing the publisher keeps the deploy policy running in IDLE standing.
+    stop_on_close: bool = False
 
 
 @dataclass

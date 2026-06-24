@@ -148,9 +148,10 @@ def send_steps_over_zmq(
                 pub.publish_fields(step.fields)
                 time.sleep(planner_dt)
             if interrupt_between and i < len(steps):
-                pub.interrupt()
+                pub.return_to_standing()
                 time.sleep(planner_dt)
-        print("\n[done] all steps sent")
+        pub.return_to_standing()
+        print("\n[done] all steps sent; holding IDLE standing (policy stays active)")
     finally:
         pub.close()
 

@@ -51,7 +51,7 @@ parser:
 safety:
   dry_run: false
   execute: true
-  command_timeout_s: 30.0
+  command_timeout_s: 60.0
 
 publisher:
   backend: "local_planner"
@@ -60,6 +60,7 @@ publisher:
   zmq_bind: true
   planner_dt: 0.1          # 10 Hz — matches deploy kinematic planner input rate
   segment_dwell_s: 3.0     # fallback hold when a command has no duration_s
+  stop_on_close: false     # keep policy in IDLE standing when voice CLI exits (not zero torque)
 
 logging:
   level: "INFO"

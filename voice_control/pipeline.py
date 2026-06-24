@@ -115,6 +115,8 @@ class VoicePipeline:
         self.boxing_active = False
         self._stream_thread: Optional[threading.Thread] = None
         self._stop_stream = threading.Event()
+        if not self.dry_run:
+            self.start_stream()
 
     def process_text(self, text: str) -> List[ParseResult]:
         if hasattr(self.parser, "parse_plan"):
@@ -210,9 +212,9 @@ class VoicePipeline:
             getattr(command, "tool", type(command).__name__), duration, 1.0 / self.config.publisher.planner_dt, bg,
         )
         self.stream.hold_for(duration, background_stream=bg)
-        self.stream.interrupt()
+        self.stream.return_to_standing()
         log.info(
-            "Interrupted %s after %.2fs (ready for next planner command)",
+            "Returned to standing after %s (%.2fs); holding IDLE until next command",
             getattr(command, "tool", type(command).__name__), duration,
         )
 
@@ -234,6 +236,8 @@ class VoicePipeline:
         if self._stream_thread is not None:
             self._stream_thread.join(timeout=1.0)
             self._stream_thread = None
+        if not self.dry_run:
+            self.stream.return_to_standing()
         self.stream.close()
 
 
