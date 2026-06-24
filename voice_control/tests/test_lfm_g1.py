@@ -68,11 +68,27 @@ def test_resolve_lfm_model_path_local(tmp_path):
     assert local is True
 
 
-def test_defaults_fill_duration():
-    from voice_control.lfm_g1 import LFMG1Parser
+def test_trim_generation():
+    from voice_control.lfm_g1 import trim_generation
 
-    p = LFMG1Parser(ParserConfig(lfm_default_duration_s=3.5, lfm_default_velocity_mps=0.4))
-    filled = p._defaults("planner_move", {"heading_deg": 90.0})
-    assert filled["duration_s"] == 3.5
-    assert filled["velocity_mps"] == 0.4
-    assert filled["heading_deg"] == 90.0
+    end = "<|" + "redacted_tool_call_end_kimi" + "|>"
+    raw = f"<|tool_call_start|>[stop(reason=\"user_request\")]{end} extra prose"
+    assert trim_generation(raw).endswith(end)
+    assert "extra prose" not in trim_generation(raw)
+
+
+def test_build_chat_messages_simple():
+    from voice_control.lfm_g1 import SYSTEM_PROMPT, build_chat_messages
+
+    msgs = build_chat_messages("walk forward")
+    assert msgs == [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": "walk forward"}]
+
+
+def test_build_chat_messages_history():
+    from voice_control.lfm_g1 import SYSTEM_PROMPT, build_chat_messages
+
+    history = [{"role": "user", "content": "go left"}, {"role": "assistant", "content": "ok"}]
+    msgs = build_chat_messages("now stop", history=history)
+    assert msgs[0]["role"] == "system"
+    assert msgs[0]["content"] == SYSTEM_PROMPT
+    assert msgs[1:] == history

@@ -41,43 +41,20 @@ _TOOL_CALL_RE = re.compile(
     re.DOTALL,
 )
 
-G1_SYSTEM_PROMPT = (
-    'List of tools:\n\n[{"type":"function","function":{"name":"select_motion_mode","description":'
-    '"Select a planner motion set and mode matching the robot keyboard controller.",'
-    '"parameters":{"type":"object","properties":{"motion_set":{"type":"string","enum":'
-    '["locomotion","squat_ground","boxing","styled_walking"]},"mode":{"type":"string","enum":'
-    '["slow_walk","walk","run","happy","stealth","injured","squat","kneel_two_legs","kneel_one_leg",'
-    '"hand_crawl","elbow_crawl","idle_boxing","walk_boxing","left_jab","right_jab","random_punches",'
-    '"left_hook","right_hook","careful","object_carrying","crouch","happy_dance","zombie","point","scared"]}},'
-    '"required":["motion_set","mode"]}}},{"type":"function","function":{"name":"planner_move",'
-    '"description":"Execute body-relative planner movement at a heading and speed for a fixed duration.",'
-    '"parameters":{"type":"object","properties":{"velocity_mps":{"type":"number"},"heading_deg":{"type":"number"},'
-    '"yaw_rate_dps":{"type":"number"},"duration_s":{"type":"number"}},"required":["velocity_mps","heading_deg",'
-    '"yaw_rate_dps","duration_s"]}}},{"type":"function","function":{"name":"rotate_in_place",'
-    '"description":"Turn the robot in place by a relative angle.","parameters":{"type":"object","properties":'
-    '{"angle_deg":{"type":"number"},"yaw_rate_dps":{"type":"number"},"duration_s":{"type":"number"}},'
-    '"required":["angle_deg","yaw_rate_dps","duration_s"]}}},{"type":"function","function":{"name":"set_body_height",'
-    '"description":"Set body height for squat and ground modes.","parameters":{"type":"object","properties":'
-    '{"height_m":{"type":"number","minimum":0.2,"maximum":0.8},"duration_s":{"type":"number"}},'
-    '"required":["height_m","duration_s"]}}},{"type":"function","function":{"name":"hold_pose",'
-    '"description":"Hold the current posture or planner state.","parameters":{"type":"object","properties":'
-    '{"duration_s":{"type":"number"}},"required":["duration_s"]}}},{"type":"function","function":{"name":'
-    '"reset_motion_momentum","description":"Immediately reset movement momentum without exiting control.",'
-    '"parameters":{"type":"object","properties":{"reason":{"type":"string","enum":["segment_complete",'
-    '"user_stop","safety"]}},"required":["reason"]}}},{"type":"function","function":{"name":"stop",'
-    '"description":"Stop all motion.","parameters":{"type":"object","properties":{"reason":{"type":"string","enum":'
-    '["user_request","safety","sequence_complete"]}},"required":["reason"]}}}]\n\nInstructions:\n'
-    "You convert voice commands into ordered humanoid robot planner tool calls.\n"
-    "Emit only " + _TOOL_CALL_START + "[...]" + _TOOL_CALL_END + ".\n"
-    "Use body-relative coordinates: +vx forward, -vx backward, +vy left, -vy right.\n"
-    "Positive yaw/angle turns left; negative yaw/angle turns right.\n"
-    "Split multi-stage commands into sequential calls.\n"
-    "Use velocity and duration rather than distance in planner_move calls.\n"
-    "Use heading_deg for body-relative translation direction: 0 forward, 90 left, 180 backward, 270 right.\n"
-    "Use reset_motion_momentum after each timed movement or turn segment.\n"
-    "Always include duration_s on timed actions; infer it from the utterance when possible.\n"
-    "Do not emit prose, explanations, markdown, or tool observations."
-)
+# Matches gear_sonic_deploy/sonic_tool_calling_eval.py SYSTEM_PROMPT (SFT training format).
+SYSTEM_PROMPT = """List of tools:
+
+[{"type":"function","function":{"name":"select_motion_mode","description":"Select a planner motion set and mode matching the robot keyboard controller.","parameters":{"type":"object","properties":{"motion_set":{"type":"string","enum":["locomotion","squat_ground","boxing","styled_walking"]},"mode":{"type":"string","enum":["slow_walk","walk","run","happy","stealth","injured","squat","kneel_two_legs","kneel_one_leg","hand_crawl","elbow_crawl","idle_boxing","walk_boxing","left_jab","right_jab","random_punches","left_hook","right_hook","careful","object_carrying","crouch","happy_dance","zombie","point","scared"]}},"required":["motion_set","mode"]}}},{"type":"function","function":{"name":"planner_move","description":"Execute body-relative planner movement at a heading and speed for a fixed duration.","parameters":{"type":"object","properties":{"velocity_mps":{"type":"number"},"heading_deg":{"type":"number"},"yaw_rate_dps":{"type":"number"},"duration_s":{"type":"number"}},"required":["velocity_mps","heading_deg","yaw_rate_dps","duration_s"]}}},{"type":"function","function":{"name":"rotate_in_place","description":"Turn the robot in place by a relative angle.","parameters":{"type":"object","properties":{"angle_deg":{"type":"number"},"yaw_rate_dps":{"type":"number"},"duration_s":{"type":"number"}},"required":["angle_deg","yaw_rate_dps","duration_s"]}}},{"type":"function","function":{"name":"set_body_height","description":"Set body height for squat and ground modes.","parameters":{"type":"object","properties":{"height_m":{"type":"number","minimum":0.2,"maximum":0.8},"duration_s":{"type":"number"}},"required":["height_m","duration_s"]}}},{"type":"function","function":{"name":"hold_pose","description":"Hold the current posture or planner state.","parameters":{"type":"object","properties":{"duration_s":{"type":"number"}},"required":["duration_s"]}}},{"type":"function","function":{"name":"stop","description":"Stop all motion.","parameters":{"type":"object","properties":{"reason":{"type":"string","enum":["user_request","safety","sequence_complete"]}},"required":["reason"]}}}]
+
+Instructions:
+You convert voice commands into ordered humanoid robot planner tool calls.
+Emit only <|tool_call_start|>[...]<|tool_call_end|>.
+Use body-relative coordinates: +vx forward, -vx backward, +vy left, -vy right.
+Positive yaw/angle turns left; negative yaw/angle turns right.
+Split multi-stage commands into sequential calls.
+Use velocity and duration rather than distance in planner_move calls.
+Use heading_deg for body-relative translation direction: 0 forward, 90 left, 180 backward, 270 right.
+Do not emit prose, explanations, markdown, or tool observations."""
 
 _NAV_MODES = frozenset({"slow_walk", "walk", "run", "happy", "stealth", "injured", "careful", "zombie"})
 _STYLED = {"happy": NavStyle.HAPPY, "stealth": NavStyle.STEALTH, "injured": NavStyle.INJURED}
@@ -187,6 +164,25 @@ def _ast_calls(source: str) -> List[Tuple[str, Dict[str, Any]]]:
     return out
 
 
+def trim_generation(text: str) -> str:
+    """Cut generation at the first tool-call end tag (sonic_tool_calling_eval)."""
+    if _TOOL_CALL_END in text:
+        return text[: text.find(_TOOL_CALL_END) + len(_TOOL_CALL_END)].strip()
+    return text.strip()
+
+
+def build_chat_messages(
+    user: str,
+    *,
+    system: str = SYSTEM_PROMPT,
+    history: Optional[List[Dict[str, str]]] = None,
+) -> List[Dict[str, str]]:
+    """Build chat messages like sonic_tool_calling_eval run_inference."""
+    if history:
+        return [{"role": "system", "content": system}, *history]
+    return [{"role": "system", "content": system}, {"role": "user", "content": user.strip()}]
+
+
 def extract_g1_tool_calls(text: str) -> List[Tuple[str, Dict[str, Any]]]:
     ends = (_TOOL_CALL_END, "<|tool_call_end|>")
     for end in ends:
@@ -290,22 +286,27 @@ class LFMG1Parser:
         plan = self.parse_plan(text, boxing_active=boxing_active)
         return plan[0] if plan else self._clarify(text, "empty plan")
 
-    def parse_plan(self, text: str, *, boxing_active: bool = False) -> List[ParseResult]:
+    def parse_plan(
+        self,
+        text: str,
+        *,
+        boxing_active: bool = False,
+        messages: Optional[List[Dict[str, str]]] = None,
+    ) -> List[ParseResult]:
         del boxing_active  # G1 FC model owns mode selection via select_motion_mode
         try:
-            raw = self._generate(text)
-            calls = extract_g1_tool_calls(raw)
+            raw = self._generate(text, messages=messages)
+            calls = extract_g1_tool_calls(trim_generation(raw))
         except Exception as exc:
             msg = str(exc) or repr(exc)
             log.warning("LFM G1 parse failed (%s): %s", type(exc).__name__, msg, exc_info=True)
             return [self._clarify(text, msg)]
         results: List[ParseResult] = []
         for name, args in calls:
-            filled = self._defaults(name, args)
             try:
-                cmd = self.mapper.map(name, filled)
+                cmd = self.mapper.map(name, args)
             except Exception as exc:
-                log.warning("G1 tool map failed for %s(%s): %s", name, filled, exc)
+                log.warning("G1 tool map failed for %s(%s): %s", name, args, exc)
                 return [self._clarify(text, f"{name}: {exc}")]
             if cmd is None:
                 continue
@@ -315,43 +316,10 @@ class LFMG1Parser:
             ))
         return results or [self._clarify(text, "no executable tool calls")]
 
-    def _defaults(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        c = self.cfg
-        base: Dict[str, Any] = {
-            "planner_move": {
-                "velocity_mps": c.lfm_default_velocity_mps, "heading_deg": 0.0,
-                "yaw_rate_dps": c.lfm_default_yaw_rate_dps, "duration_s": c.lfm_default_duration_s,
-            },
-            "rotate_in_place": {
-                "angle_deg": 0.0, "yaw_rate_dps": c.lfm_default_yaw_rate_dps,
-                "duration_s": c.lfm_default_duration_s,
-            },
-            "set_body_height": {"height_m": c.lfm_default_height_m, "duration_s": c.lfm_default_duration_s},
-            "hold_pose": {"duration_s": c.lfm_default_duration_s},
-            "reset_motion_momentum": {"reason": "segment_complete", "duration_s": 0.2},
-            "stop": {"reason": "user_request"},
-            "select_motion_mode": {"motion_set": "locomotion", "mode": "walk"},
-        }.get(name, {})
-        out = dict(base)
-        out.update(args)
-        for key in ("duration_s", "velocity_mps", "heading_deg", "yaw_rate_dps", "angle_deg", "height_m"):
-            if key in out and out[key] is None:
-                out[key] = base.get(key, c.lfm_default_duration_s if key == "duration_s" else 0.0)
-        return out
-
-    def _user_prompt(self, text: str) -> str:
-        c = self.cfg
-        return (
-            f"Defaults if omitted: velocity_mps={c.lfm_default_velocity_mps}, "
-            f"yaw_rate_dps={c.lfm_default_yaw_rate_dps}, duration_s={c.lfm_default_duration_s} "
-            f"(infer duration from speech), height_m={c.lfm_default_height_m}. "
-            f"Command: {text.strip()}"
-        )
-
-    def _generate(self, text: str) -> str:
+    def _generate(self, text: str, *, messages: Optional[List[Dict[str, str]]] = None) -> str:
         if self.cfg.lfm_remote_url:
             return self._generate_remote(text)
-        return self._generate_local(text)
+        return self._generate_local(text, messages=messages)
 
     def _resolve_device(self, torch: Any) -> str:
         want = (self.cfg.lfm_device or "cpu").lower()
@@ -367,33 +335,56 @@ class LFMG1Parser:
             log.warning("CUDA unavailable; using CPU for LFM (set parser.lfm_device: cpu to silence)")
         return "cpu"
 
-    def _generate_local(self, text: str) -> str:
+    def _generate_local(self, text: str, *, messages: Optional[List[Dict[str, str]]] = None) -> str:
         import torch
 
         self._ensure_model()
         device = self._model.device
-        messages = [
-            {"role": "system", "content": G1_SYSTEM_PROMPT},
-            {"role": "user", "content": self._user_prompt(text)},
-        ]
-        model_inputs = self._tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors="pt", tokenize=True,
-        )
-        model_inputs = model_inputs.to(device)
-        input_len = model_inputs["input_ids"].shape[-1]
-        gen_kw: Dict[str, Any] = {
+        chat = build_chat_messages(text, history=messages)
+        try:
+            templated = self._tokenizer.apply_chat_template(
+                chat,
+                return_tensors="pt",
+                tokenize=True,
+                add_generation_prompt=True,
+                return_dict=True,
+            )
+        except TypeError:
+            templated = self._tokenizer.apply_chat_template(
+                chat,
+                return_tensors="pt",
+                tokenize=True,
+                add_generation_prompt=True,
+            )
+
+        if isinstance(templated, torch.Tensor):
+            input_ids = templated.to(device)
+            attention_mask = None
+        else:
+            input_ids = templated["input_ids"].to(device)
+            attention_mask = templated.get("attention_mask")
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(device)
+
+        pad_token_id = self._tokenizer.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = self._tokenizer.eos_token_id if self._tokenizer.eos_token_id is not None else 0
+
+        generate_kwargs: Dict[str, Any] = {
+            "input_ids": input_ids,
+            "do_sample": False,
             "max_new_tokens": self.cfg.lfm_max_new_tokens,
-            "do_sample": self.cfg.lfm_temperature > 0,
-            "repetition_penalty": 1.05,
+            "pad_token_id": pad_token_id,
         }
-        if self.cfg.lfm_temperature > 0:
-            gen_kw["temperature"] = max(self.cfg.lfm_temperature, 1e-5)
-            gen_kw["top_k"] = self.cfg.lfm_top_k
+        if attention_mask is not None:
+            generate_kwargs["attention_mask"] = attention_mask
+
         with torch.no_grad():
-            out = self._model.generate(**model_inputs, **gen_kw)
-        text_out = self._tokenizer.decode(out[0][input_len:], skip_special_tokens=False)
-        log.info("LFM raw output: %r", text_out[:500])
-        return text_out
+            output = self._model.generate(**generate_kwargs)
+
+        raw = self._tokenizer.decode(output[0][input_ids.shape[-1]:], skip_special_tokens=False)
+        log.info("LFM raw output: %r", raw[:500])
+        return raw
 
     def _generate_remote(self, text: str) -> str:
         url = self.cfg.lfm_remote_url
